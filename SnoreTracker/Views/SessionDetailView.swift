@@ -119,7 +119,10 @@ struct SessionDetailView: View {
                 }
                 .padding(.vertical, 12)
             } else {
-                SnoringBarChart(session: session, theme: theme).frame(height: 130)
+                // ── 新横向时间轴 ──
+                SnoringTimeline(session: session, theme: theme)
+                // ── 旧竖向柱状图（保留注释，勿删）──
+                // SnoringBarChart(session: session, theme: theme).frame(height: 130)
             }
         }
         .padding(20)
@@ -179,8 +182,125 @@ struct SessionDetailView: View {
     }
 }
 
-// MARK: - Snoring Bar Chart
+// ══════════════════════════════════════════════════════════════
+// MARK: - NEW: Snoring Timeline（横向水平时间轴）
+//   • X 轴 = session 全程（startTime → endTime）
+//   • 块位置 = 事件开始时间在轴上的比例位置
+//   • 块宽度 = 事件时长相对于最长事件归一化（保证最小可读宽度）
+//   • 底部标签 = 轴起止 + 每个事件开始时间（精确到秒）
+// ══════════════════════════════════════════════════════════════
+struct SnoringTimeline: View {
+    let session: SleepSession
+    let theme: AppTheme
 
+    private var events: [SnoringEvent] { session.snoringEvents }
+    private var axisStart: Date { session.startTime }
+    private var axisEnd:   Date { session.endTime ?? Date() }
+    private var axisDuration: TimeInterval { max(1, axisEnd.timeIntervalSince(axisStart)) }
+    private var maxEventDuration: TimeInterval { events.map { $0.duration }.max() ?? 1 }
+
+    // 轨道高度 / 最小块宽
+    private let trackH:   CGFloat = 52
+    private let minBlockW: CGFloat = 44
+
+    // 块颜色（循环）
+    private func blockColor(_ idx: Int) -> Color {
+        let palette: [Color] = [
+            theme.liveIndicator,
+            theme.accent,
+            theme.snoringAccent,
+            theme.accentLight,
+        ]
+        return palette[idx % palette.count]
+    }
+
+    /// 块的左边 X 坐标（按时间比例定位，不超右边界）
+    private func blockX(_ event: SnoringEvent, W: CGFloat) -> CGFloat {
+        let naturalX = CGFloat(event.startTime.timeIntervalSince(axisStart) / axisDuration) * W
+        return min(max(0, naturalX), W - blockWidth(event, W: W))
+    }
+
+    /// 块宽度（按时长相对最长事件归一化，保留最小宽度）
+    private func blockWidth(_ event: SnoringEvent, W: CGFloat) -> CGFloat {
+        // 最长事件最多占轨道宽度的 38%（不超 150pt），其余等比缩放
+        let maxW = min(W * 0.38, 150.0)
+        let scaled = CGFloat(event.duration / maxEventDuration) * maxW
+        return max(minBlockW, scaled)
+    }
+
+    private func durationStr(_ t: TimeInterval) -> String {
+        let s = Int(t)
+        return s < 60 ? "\(s)s" : "\(s / 60)m\(s % 60)s"
+    }
+
+    var body: some View {
+        Canvas { ctx, size in
+            let W = size.width
+            let labelY = trackH + 8
+
+            // ── 轨道背景 ──
+            let trackRect = CGRect(x: 0, y: 0, width: W, height: trackH)
+            ctx.fill(Path(roundedRect: trackRect, cornerRadius: 14),
+                     with: .color(.white.opacity(0.06)))
+            ctx.stroke(Path(roundedRect: trackRect, cornerRadius: 14),
+                       with: .color(.white.opacity(0.14)), lineWidth: 1)
+
+            // ── 事件块 ──
+            for (idx, event) in events.enumerated() {
+                let x  = blockX(event, W: W)
+                let bW = blockWidth(event, W: W)
+
+                // 块填色
+                let blockRect = CGRect(x: x, y: 5, width: bW, height: trackH - 10)
+                ctx.fill(Path(roundedRect: blockRect, cornerRadius: 10),
+                         with: .color(blockColor(idx)))
+
+                // 块内时长文字
+                ctx.draw(
+                    Text(durationStr(event.duration))
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .foregroundColor(.white),
+                    at: CGPoint(x: x + bW / 2, y: trackH / 2),
+                    anchor: .center
+                )
+
+                // 块下方时间标签（精确到秒，居中于块，不溢出边缘）
+                let safeCX = max(28, min(W - 28, x + bW / 2))
+                ctx.draw(
+                    Text(event.startTime.formatted(.dateTime.hour().minute().second()))
+                        .font(.system(size: 9))
+                        .foregroundColor(.white.opacity(0.5)),
+                    at: CGPoint(x: safeCX, y: labelY),
+                    anchor: .top
+                )
+            }
+
+            // ── 轴起止标签 ──
+            let edgeFmt = Date.FormatStyle.dateTime.hour().minute()
+
+            ctx.draw(
+                Text(axisStart.formatted(edgeFmt))
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.35)),
+                at: CGPoint(x: 0, y: labelY),
+                anchor: .topLeading
+            )
+            ctx.draw(
+                Text(axisEnd.formatted(edgeFmt))
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.35)),
+                at: CGPoint(x: W, y: labelY),
+                anchor: .topTrailing
+            )
+        }
+        .frame(height: trackH + 32)  // 52pt 轨道 + 32pt 标签区
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// MARK: - OLD: Snoring Bar Chart（竖向柱状图，已停用，保留备查）
+// ══════════════════════════════════════════════════════════════
+/*
 struct SnoringBarChart: View {
     let session: SleepSession
     let theme: AppTheme
@@ -194,21 +314,15 @@ struct SnoringBarChart: View {
         return last.endTime ?? last.startTime.addingTimeInterval(10)
     }
     private var eventsSpan: TimeInterval { max(5, lastEventEndTime.timeIntervalSince(firstEventTime)) }
-    private var axisStart: Date {
-        firstEventTime.addingTimeInterval(-max(10, eventsSpan * 0.20))
-    }
-    private var axisEnd: Date {
-        lastEventEndTime.addingTimeInterval(max(10, eventsSpan * 0.20))
-    }
+    private var axisStart: Date { firstEventTime.addingTimeInterval(-max(10, eventsSpan * 0.20)) }
+    private var axisEnd:   Date { lastEventEndTime.addingTimeInterval(max(10, eventsSpan * 0.20)) }
     private var axisDuration: TimeInterval { max(1, axisEnd.timeIntervalSince(axisStart)) }
-
     private var timeFormat: Date.FormatStyle {
         axisDuration < 300 ? .dateTime.hour().minute().second() : .dateTime.hour().minute()
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Y 轴标注
             HStack {
                 Text("持续时长 ↑").font(.system(size: 10)).foregroundColor(.white.opacity(0.25))
                 Spacer()
@@ -219,26 +333,20 @@ struct SnoringBarChart: View {
                         .foregroundColor(theme.snoringAccent.opacity(0.7))
                 }
             }
-
             GeometryReader { geo in
                 let w    = geo.size.width
                 let h    = geo.size.height
                 let rawW = events.count > 0 ? w / CGFloat(events.count) * 0.50 : w
                 let barW = min(max(rawW, 8), 30)
                 let xs   = adjustedXPositions(width: w, barW: barW)
-
                 Canvas { context, size in
-                    // 参考横线
                     for ratio in [0.25, 0.5, 0.75, 1.0] as [CGFloat] {
                         var p = Path()
                         let y = size.height * (1 - ratio)
                         p.move(to: CGPoint(x: 0, y: y))
                         p.addLine(to: CGPoint(x: size.width, y: y))
-                        context.stroke(p,
-                            with: .color(.white.opacity(ratio == 1 ? 0.18 : 0.05)),
-                            lineWidth: 1)
+                        context.stroke(p, with: .color(.white.opacity(ratio == 1 ? 0.18 : 0.05)), lineWidth: 1)
                     }
-                    // 柱子
                     for (i, event) in events.enumerated() {
                         guard i < xs.count else { continue }
                         let x      = xs[i]
@@ -246,15 +354,12 @@ struct SnoringBarChart: View {
                         let barH   = max(6, hRatio * (size.height - 2))
                         let rect   = CGRect(x: x, y: size.height - barH, width: barW, height: barH)
                         let path   = Path(roundedRect: rect, cornerRadius: min(barW / 2, 5))
-                        context.fill(path,
-                            with: .color(theme.snoringAccent.opacity(0.45 + 0.55 * Double(hRatio))))
+                        context.fill(path, with: .color(theme.snoringAccent.opacity(0.45 + 0.55 * Double(hRatio))))
                     }
                 }
                 .frame(width: w, height: h)
             }
             .frame(height: 88)
-
-            // X 轴标签
             HStack(alignment: .top) {
                 Text(axisStart.formatted(timeFormat))
                 Spacer()
@@ -291,6 +396,7 @@ struct SnoringBarChart: View {
         return Date(timeIntervalSince1970: axisStart.timeIntervalSince1970 + axisDuration / 2)
     }
 }
+*/
 
 // MARK: - Snoring Event Row
 
