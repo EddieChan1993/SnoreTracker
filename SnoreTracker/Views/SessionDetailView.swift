@@ -196,8 +196,18 @@ struct SnoringTimeline: View {
     private var events: [SnoringEvent] {
         session.snoringEvents.sorted { $0.startTime < $1.startTime }
     }
-    private var axisStart: Date { session.startTime }
-    private var axisEnd:   Date { session.endTime ?? Date() }
+
+    // ── 轴范围：自动延伸确保所有事件都在范围内 ──
+    private var axisStart: Date {
+        let earliest = events.map { $0.startTime }.min() ?? session.startTime
+        return min(session.startTime, earliest)
+    }
+    private var axisEnd: Date {
+        let latest = events.compactMap { $0.endTime }.max()
+            ?? events.last?.startTime
+            ?? session.startTime
+        return max(session.endTime ?? Date(), latest)
+    }
     private var axisDuration: TimeInterval { max(1, axisEnd.timeIntervalSince(axisStart)) }
     private var maxEventDuration: TimeInterval { events.map { $0.duration }.max() ?? 1 }
 
@@ -290,54 +300,47 @@ struct SnoringTimeline: View {
                 )
             }
 
-            // ── 标签区（重叠检测：已占用区间集合） ──
-            //   估算宽度：HH:mm ≈ 32pt，HH:mm:ss ≈ 54pt（size 9/10）
-            let edgeW: CGFloat  = 34
-            let eventW: CGFloat = 56
-            let labelGap: CGFloat = 8
-            let edgeFmt  = Date.FormatStyle.dateTime.hour().minute()
-            let eventFmt = Date.FormatStyle.dateTime.hour().minute().second()
+            // ── 标签区 ──
+            // HH:mm ≈ 34pt (size 10)，HH:mm:ss ≈ 52pt (size 9)
+            let edgeW:    CGFloat = 36
+            let eventHalfW: CGFloat = 28   // 单边宽度（居中时左右各 28pt）
+            let minGap:   CGFloat = 6      // 标签之间最小间距
+            let edgeFmt   = Date.FormatStyle.dateTime.hour().minute()
+            let eventFmt  = Date.FormatStyle.dateTime.hour().minute().second()
             let labelColor = Color.white.opacity(0.4)
 
-            // 已占区间：[左, 右]
-            var occupied: [(CGFloat, CGFloat)] = []
-
-            // 起始标签（左锚，始终显示）
+            // 起始标签（左锚）
             ctx.draw(
                 Text(axisStart.formatted(edgeFmt))
                     .font(.system(size: 10)).foregroundColor(labelColor),
                 at: CGPoint(x: 0, y: labelY), anchor: .topLeading
             )
-            occupied.append((0, edgeW))
-
-            // 结束标签（右锚，始终显示）
+            // 结束标签（右锚）
             ctx.draw(
                 Text(axisEnd.formatted(edgeFmt))
                     .font(.system(size: 10)).foregroundColor(labelColor),
                 at: CGPoint(x: W, y: labelY), anchor: .topTrailing
             )
-            occupied.append((W - edgeW, W))
 
-            // 事件时间标签（居中于块，重叠时跳过）
+            // 事件时间标签：顺序扫描，维护「上一个标签的右边界」
+            // 同时确保不侵入右侧 edgeW 区域
+            var prevRight: CGFloat = edgeW + minGap
+            let rightBound: CGFloat = W - edgeW - minGap
+
             for (idx, event) in events.enumerated() {
                 guard idx < xs.count else { continue }
                 let centerX = xs[idx] + ws[idx] / 2
-                let halfW   = eventW / 2
-                let lx = centerX - halfW
-                let rx = centerX + halfW
+                let lx = centerX - eventHalfW
+                let rx = centerX + eventHalfW
 
-                // 与已占区间有重叠则跳过
-                let overlaps = occupied.contains { (a, b) in
-                    lx < b + labelGap && rx > a - labelGap
-                }
-                guard !overlaps else { continue }
+                guard lx >= prevRight && rx <= rightBound else { continue }
 
                 ctx.draw(
                     Text(event.startTime.formatted(eventFmt))
                         .font(.system(size: 9)).foregroundColor(labelColor),
                     at: CGPoint(x: centerX, y: labelY), anchor: .top
                 )
-                occupied.append((lx, rx))
+                prevRight = rx + minGap
             }
         }
         .frame(height: trackH + 32)
