@@ -2,8 +2,11 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject var sessionManager: SleepSessionManager
+    @EnvironmentObject var themeManager: ThemeManager
     @State private var showPermissionAlert = false
     @State private var pulse = false
+
+    private var theme: AppTheme { themeManager.current }
 
     var body: some View {
         ZStack {
@@ -13,7 +16,6 @@ struct HomeView: View {
                 topBar
                 Spacer()
 
-                // 根据权限 & 监测状态展示不同内容
                 if !sessionManager.permissionGranted {
                     permissionView
                 } else if sessionManager.isMonitoring {
@@ -28,7 +30,6 @@ struct HomeView: View {
             }
         }
         .onAppear {
-            // 有权限就直接开始，没权限弹引导
             if !sessionManager.permissionGranted {
                 sessionManager.requestPermissionAndStart { granted in
                     if !granted { showPermissionAlert = true }
@@ -49,10 +50,8 @@ struct HomeView: View {
 
     private var backgroundGradient: LinearGradient {
         sessionManager.isSnoring
-            ? LinearGradient(colors: [Color(hex: "1A0D00"), Color(hex: "2A1500"), Color(hex: "1A0D00")],
-                             startPoint: .topLeading, endPoint: .bottomTrailing)
-            : LinearGradient(colors: [Color(hex: "0A0F1E"), Color(hex: "111827"), Color(hex: "0A0F1E")],
-                             startPoint: .topLeading, endPoint: .bottomTrailing)
+            ? LinearGradient(colors: theme.bgSnoringColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+            : LinearGradient(colors: theme.bgColors,        startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 
     // MARK: - Top Bar
@@ -68,11 +67,10 @@ struct HomeView: View {
                     .foregroundColor(.white.opacity(0.35))
             }
             Spacer()
-            // 常驻监测状态指示器
             if sessionManager.isMonitoring {
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(Color(hex: "4CAF50"))
+                        .fill(theme.liveIndicator)
                         .frame(width: 7, height: 7)
                         .opacity(pulse ? 1 : 0.3)
                         .onAppear {
@@ -121,10 +119,12 @@ struct HomeView: View {
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
                     .frame(height: 56)
-                    .background(LinearGradient(colors: [Color(hex: "3A6FD8"), Color(hex: "1A3FAA")],
-                                               startPoint: .leading, endPoint: .trailing))
+                    .background(
+                        LinearGradient(colors: [theme.accent, theme.accent.opacity(0.6)],
+                                       startPoint: .leading, endPoint: .trailing)
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .shadow(color: Color(hex: "3A6FD8").opacity(0.4), radius: 12, y: 6)
+                    .shadow(color: theme.accent.opacity(0.4), radius: 12, y: 6)
             }
             .padding(.horizontal, 32)
         }
@@ -134,8 +134,7 @@ struct HomeView: View {
 
     private var startingView: some View {
         VStack(spacing: 16) {
-            ProgressView()
-                .tint(.white)
+            ProgressView().tint(.white)
             Text("正在启动监测...")
                 .font(.system(size: 15))
                 .foregroundColor(.white.opacity(0.5))
@@ -146,15 +145,14 @@ struct HomeView: View {
 
     private var monitoringView: some View {
         VStack(spacing: 32) {
-
             // 主状态环
             ZStack {
                 // 背景光晕
                 Circle()
                     .fill(RadialGradient(
                         colors: sessionManager.isSnoring
-                            ? [Color.orange.opacity(0.3), Color.clear]
-                            : [Color(hex: "3A6FD8").opacity(0.12), Color.clear],
+                            ? [theme.snoringAccent.opacity(0.3), Color.clear]
+                            : [theme.accent.opacity(0.12), Color.clear],
                         center: .center, startRadius: 60, endRadius: 140))
                     .frame(width: 280, height: 280)
 
@@ -168,8 +166,10 @@ struct HomeView: View {
                     .trim(from: 0, to: CGFloat(min(sessionManager.currentLevel * 6, 1)))
                     .stroke(
                         sessionManager.isSnoring
-                            ? LinearGradient(colors: [.orange, .red], startPoint: .leading, endPoint: .trailing)
-                            : LinearGradient(colors: [Color(hex: "6B9FFF"), Color(hex: "A8C8FF")], startPoint: .leading, endPoint: .trailing),
+                            ? LinearGradient(colors: [theme.snoringAccent, theme.snoringAccent.opacity(0.6)],
+                                             startPoint: .leading, endPoint: .trailing)
+                            : LinearGradient(colors: [theme.accent, theme.accentLight],
+                                             startPoint: .leading, endPoint: .trailing),
                         style: StrokeStyle(lineWidth: 10, lineCap: .round))
                     .frame(width: 190, height: 190)
                     .rotationEffect(.degrees(-90))
@@ -181,8 +181,10 @@ struct HomeView: View {
                         .font(.system(size: 48))
                         .foregroundStyle(
                             sessionManager.isSnoring
-                                ? LinearGradient(colors: [.orange, .red], startPoint: .top, endPoint: .bottom)
-                                : LinearGradient(colors: [Color(hex: "A8C8FF"), Color(hex: "6B9FFF")], startPoint: .top, endPoint: .bottom))
+                                ? LinearGradient(colors: [theme.snoringAccent, theme.snoringAccent.opacity(0.7)],
+                                                 startPoint: .top, endPoint: .bottom)
+                                : LinearGradient(colors: [theme.accentLight, theme.accent],
+                                                 startPoint: .top, endPoint: .bottom))
                         .symbolEffect(.pulse, isActive: sessionManager.isSnoring)
 
                     Text(sessionManager.isSnoring ? "正在录音..." : "静默监测中")
@@ -192,7 +194,10 @@ struct HomeView: View {
             }
 
             // 波形
-            LiveWaveform(level: sessionManager.currentLevel, isSnoring: sessionManager.isSnoring)
+            LiveWaveform(level: sessionManager.currentLevel,
+                         isSnoring: sessionManager.isSnoring,
+                         accent: theme.accent,
+                         snoringAccent: theme.snoringAccent)
                 .frame(height: 40)
                 .padding(.horizontal, 40)
 
@@ -205,36 +210,26 @@ struct HomeView: View {
 
     private var nightStatsCard: some View {
         HStack(spacing: 0) {
-            nightStat(
-                icon: "waveform.badge.mic",
-                value: "\(sessionManager.snoringCount)",
-                label: "次呼噜",
-                color: .orange
-            )
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 1, height: 40)
-            nightStat(
-                icon: "clock.fill",
-                value: sessionManager.isSnoring
-                    ? formatSeconds(sessionManager.liveSnoreDuration)   // 实时计数
-                    : formatSeconds(sessionManager.totalSnoringSeconds), // 累计
-                label: sessionManager.isSnoring ? "正在呼噜" : "呼噜时长",
-                color: sessionManager.isSnoring ? .orange : Color(hex: "6B9FFF")
-            )
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 1, height: 40)
-            nightStat(
-                icon: "moon.fill",
-                value: sessionDuration,
-                label: "监测时长",
-                color: Color(hex: "A8C8FF")
-            )
+            nightStat(icon: "waveform.badge.mic",
+                      value: "\(sessionManager.snoringCount)",
+                      label: "次呼噜",
+                      color: theme.snoringAccent)
+            Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1, height: 40)
+            nightStat(icon: "clock.fill",
+                      value: sessionManager.isSnoring
+                          ? formatSeconds(sessionManager.liveSnoreDuration)
+                          : formatSeconds(sessionManager.totalSnoringSeconds),
+                      label: sessionManager.isSnoring ? "正在呼噜" : "呼噜时长",
+                      color: sessionManager.isSnoring ? theme.snoringAccent : theme.accent)
+            Rectangle().fill(Color.white.opacity(0.08)).frame(width: 1, height: 40)
+            nightStat(icon: "moon.fill",
+                      value: sessionDuration,
+                      label: "监测时长",
+                      color: theme.accentLight)
         }
         .padding(.vertical, 18)
         .padding(.horizontal, 12)
-        .background(Color.white.opacity(0.07))
+        .background(Color.white.opacity(theme.cardOpacity))
         .clipShape(RoundedRectangle(cornerRadius: 20))
         .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08), lineWidth: 1))
         .padding(.horizontal, 24)
@@ -255,15 +250,15 @@ struct HomeView: View {
         .animation(.spring(duration: 0.4), value: sessionManager.snoringCount)
     }
 
-    // MARK: - 底部提示
+    // MARK: - 底部提示（5s 动态读取）
 
     private var bottomInfo: some View {
         VStack(spacing: 6) {
             if sessionManager.isMonitoring {
+                let silenceSec = Int(sessionManager.audioService.silenceDelay)
                 HStack(spacing: 6) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 12))
-                    Text("锁屏后仍在后台监测 · 检测到呼噜自动录音 · 5秒无声停止")
+                    Image(systemName: "info.circle").font(.system(size: 12))
+                    Text("锁屏后仍在后台监测 · 检测到呼噜自动录音 · \(silenceSec)秒无声停止")
                         .font(.system(size: 11))
                 }
                 .foregroundColor(.white.opacity(0.3))
@@ -282,14 +277,12 @@ struct HomeView: View {
     private var sessionDuration: String {
         guard let s = sessionManager.todaySession else { return "0m" }
         let t = Int(Date().timeIntervalSince(s.startTime))
-        let h = t / 3600
-        let m = (t % 3600) / 60
+        let h = t / 3600; let m = (t % 3600) / 60
         return h > 0 ? "\(h)h\(m)m" : "\(m)m"
     }
 
     private func formatSeconds(_ s: Double) -> String {
-        let t = Int(s)
-        let m = t / 60; let sec = t % 60
+        let t = Int(s); let m = t / 60; let sec = t % 60
         if m > 0 { return "\(m)m\(sec)s" }
         return "\(sec)s"
     }
@@ -300,13 +293,15 @@ struct HomeView: View {
 struct LiveWaveform: View {
     let level: Float
     let isSnoring: Bool
+    let accent: Color
+    let snoringAccent: Color
     private let count = 30
 
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<count, id: \.self) { i in
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(isSnoring ? Color.orange.opacity(0.8) : Color(hex: "6B9FFF").opacity(0.7))
+                    .fill(isSnoring ? snoringAccent.opacity(0.8) : accent.opacity(0.7))
                     .frame(width: 3, height: barHeight(i))
                     .animation(.easeInOut(duration: 0.1), value: level)
             }

@@ -3,11 +3,15 @@ import SwiftUI
 struct ReportsView: View {
     @EnvironmentObject var store: SleepStore
     @EnvironmentObject var sessionManager: SleepSessionManager
+    @EnvironmentObject var themeManager: ThemeManager
     @State private var selectedSession: SleepSession?
+
+    private var theme: AppTheme { themeManager.current }
 
     var body: some View {
         ZStack {
-            Color(hex: "0A0F1E").ignoresSafeArea()
+            LinearGradient(colors: theme.bgColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 // Header
@@ -25,13 +29,11 @@ struct ReportsView: View {
                 .padding(.bottom, 16)
 
                 if store.sessions.isEmpty {
-                    Spacer()
-                    emptyState
-                    Spacer()
+                    Spacer(); emptyState; Spacer()
                 } else {
                     List {
                         ForEach(store.sessions) { session in
-                            SessionRowView(session: session)
+                            SessionRowView(session: session, theme: theme)
                                 .onTapGesture { selectedSession = session }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(role: .destructive) {
@@ -53,6 +55,7 @@ struct ReportsView: View {
         .sheet(item: $selectedSession) { session in
             SessionDetailView(session: session)
                 .environmentObject(store)
+                .environmentObject(themeManager)
         }
     }
 
@@ -60,7 +63,7 @@ struct ReportsView: View {
         VStack(spacing: 16) {
             Image(systemName: "moon.zzz")
                 .font(.system(size: 56))
-                .foregroundColor(Color(hex: "3A6FD8").opacity(0.6))
+                .foregroundColor(theme.accent.opacity(0.6))
             Text("还没有睡眠记录")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundColor(.white.opacity(0.7))
@@ -75,10 +78,10 @@ struct ReportsView: View {
 
 struct SessionRowView: View {
     let session: SleepSession
+    let theme: AppTheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Top row: date + score
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.startTime.formatted(.dateTime.month().day().weekday()))
@@ -98,20 +101,25 @@ struct SessionRowView: View {
                     .clipShape(Capsule())
             }
 
-            // Stats
             HStack(spacing: 0) {
-                miniStat(icon: "moon.fill", value: formatDuration(session.duration), label: "睡眠", color: Color(hex: "6B9FFF"))
-                miniStat(icon: "waveform", value: "\(session.snoringEvents.count)次", label: "呼噜", color: .orange)
-                miniStat(icon: "percent", value: String(format: "%.0f%%", session.snoringPercentage), label: "占比", color: Color(hex: "A8C8FF"))
+                miniStat(icon: "moon.fill",
+                         value: formatDuration(session.duration),
+                         label: "睡眠",
+                         color: theme.accent)
+                miniStat(icon: "waveform",
+                         value: "\(session.snoringEvents.count)次",
+                         label: "呼噜",
+                         color: theme.snoringAccent)
+                miniStat(icon: "percent",
+                         value: String(format: "%.0f%%", session.snoringPercentage),
+                         label: "占比",
+                         color: theme.accentLight)
             }
         }
         .padding(18)
-        .background(Color.white.opacity(0.07))
+        .background(Color.white.opacity(theme.cardOpacity))
         .clipShape(RoundedRectangle(cornerRadius: 18))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.08), lineWidth: 1))
     }
 
     private func miniStat(icon: String, value: String, label: String, color: Color) -> some View {
@@ -131,7 +139,7 @@ struct SessionRowView: View {
     private var scoreColor: Color {
         switch session.snoringScore {
         case "优秀": return .green
-        case "良好": return Color(hex: "6B9FFF")
+        case "良好": return theme.accent
         case "一般": return .orange
         default:     return .red
         }
