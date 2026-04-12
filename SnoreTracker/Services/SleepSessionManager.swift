@@ -67,6 +67,19 @@ class SleepSessionManager: ObservableObject {
         }
     }
 
+    // MARK: - 监测开关
+
+    /// 手动切换监测状态（停止 / 启动）
+    func toggleMonitoring() {
+        if isMonitoring {
+            audioService.stopMonitoring()
+        } else {
+            guard permissionGranted else { return }
+            if todaySession == nil { loadOrCreateTodaySession() }
+            audioService.startMonitoring()
+        }
+    }
+
     // MARK: - 权限申请（首次）
 
     func requestPermissionAndStart(completion: @escaping (Bool) -> Void) {

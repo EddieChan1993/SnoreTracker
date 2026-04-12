@@ -118,16 +118,23 @@ class AudioMonitorService: ObservableObject {
     var onSnoringStopped: (() -> Void)?
     var onError: ((String) -> Void)?
 
-    // MARK: Config（可在设置页调整）
-    /// 最低 RMS 阈值：低于此值视为静音，不做频率分析
-    var minimumRMS: Float = 0.02
-    /// 呼噜频率得分阈值（0~1）：超过此值才认定为呼噜
-    var snoreScoreThreshold: Float = 0.40
-    var confirmDelay:  TimeInterval = 1.0   // 持续多少秒确认为呼噜
-    var silenceDelay:  TimeInterval = 5.0   // 5 秒无声停止录音
+    // MARK: Config（可在设置页调整，启动时从 UserDefaults 恢复）
+    var minimumRMS:          Float        = 0.02
+    var snoreScoreThreshold: Float        = 0.40
+    var confirmDelay:        TimeInterval = 1.0
+    var silenceDelay:        TimeInterval = 5.0
 
     // MARK: Private
     private var audioEngine   = AVAudioEngine()
+
+    // MARK: - Init（恢复用户保存的设置）
+    init() {
+        let d = UserDefaults.standard
+        if d.object(forKey: "minimumRMS")          != nil { minimumRMS          = Float(d.double(forKey: "minimumRMS")) }
+        if d.object(forKey: "snoreScoreThreshold") != nil { snoreScoreThreshold = Float(d.double(forKey: "snoreScoreThreshold")) }
+        if d.object(forKey: "confirmDelay")        != nil { confirmDelay        = d.double(forKey: "confirmDelay") }
+        if d.object(forKey: "silenceDelay")        != nil { silenceDelay        = d.double(forKey: "silenceDelay") }
+    }
     private var recordingFile: AVAudioFile?
     private var isRecording   = false
     private var detector:     SnoringDetector?

@@ -5,6 +5,8 @@ struct HomeView: View {
     @EnvironmentObject var themeManager: ThemeManager
     @State private var showPermissionAlert = false
     @State private var pulse = false
+    // 直接读 AppStorage，启动时即显示正确值，设置页修改后自动更新
+    @AppStorage("silenceDelay") private var silenceDelay: Double = 5.0
 
     private var theme: AppTheme { themeManager.current }
 
@@ -21,7 +23,7 @@ struct HomeView: View {
                 } else if sessionManager.isMonitoring {
                     monitoringView
                 } else {
-                    startingView
+                    stoppedView
                 }
 
                 Spacer()
@@ -130,14 +132,40 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - 启动中
+    // MARK: - 已暂停（有权限但未监测）
 
-    private var startingView: some View {
-        VStack(spacing: 16) {
-            ProgressView().tint(.white)
-            Text("正在启动监测...")
-                .font(.system(size: 15))
-                .foregroundColor(.white.opacity(0.5))
+    private var stoppedView: some View {
+        VStack(spacing: 28) {
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 72))
+                .foregroundStyle(
+                    LinearGradient(colors: [theme.accentLight.opacity(0.5), theme.accent.opacity(0.3)],
+                                   startPoint: .top, endPoint: .bottom))
+
+            VStack(spacing: 8) {
+                Text("监测已暂停")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.8))
+                Text("开启后将在后台自动检测呼噜声")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+
+            Button {
+                sessionManager.toggleMonitoring()
+            } label: {
+                Label("开始监测", systemImage: "play.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 56)
+                    .background(
+                        LinearGradient(colors: [theme.accent, theme.accent.opacity(0.7)],
+                                       startPoint: .leading, endPoint: .trailing))
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .shadow(color: theme.accent.opacity(0.4), radius: 12, y: 6)
+            }
+            .padding(.horizontal, 32)
         }
     }
 
@@ -203,6 +231,23 @@ struct HomeView: View {
 
             // 今晚统计卡
             nightStatsCard
+
+            // 暂停监测按钮
+            Button {
+                sessionManager.toggleMonitoring()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "pause.circle")
+                        .font(.system(size: 15))
+                    Text("暂停监测")
+                        .font(.system(size: 14, weight: .medium))
+                }
+                .foregroundColor(.white.opacity(0.4))
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Color.white.opacity(0.06))
+                .clipShape(Capsule())
+            }
         }
     }
 
@@ -255,7 +300,7 @@ struct HomeView: View {
     private var bottomInfo: some View {
         VStack(spacing: 6) {
             if sessionManager.isMonitoring {
-                let silenceSec = Int(sessionManager.audioService.silenceDelay)
+                let silenceSec = Int(silenceDelay)
                 HStack(spacing: 6) {
                     Image(systemName: "info.circle").font(.system(size: 12))
                     Text("锁屏后仍在后台监测 · 检测到呼噜自动录音 · \(silenceSec)秒无声停止")

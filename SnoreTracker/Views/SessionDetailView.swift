@@ -212,8 +212,8 @@ struct SnoringTimeline: View {
     private var maxEventDuration: TimeInterval { events.map { $0.duration }.max() ?? 1 }
 
     private let trackH:    CGFloat = 52
-    private let minBlockW: CGFloat = 44
-    private let blockGap:  CGFloat = 6   // 块之间最小间距
+    private let minBlockW: CGFloat = 32  // 足够显示"8s"，比之前的 44 小
+    private let blockGap:  CGFloat = 5   // 块之间最小间距
 
     private func blockColor(_ idx: Int) -> Color {
         let palette: [Color] = [
@@ -225,11 +225,13 @@ struct SnoringTimeline: View {
         return palette[idx % palette.count]
     }
 
-    /// 各块宽度
+    /// 各块宽度：按 session 总时长比例定宽
+    /// → 短事件在长 session 里会很窄（取 minBlockW），未打呼噜的灰色段自然显现
+    /// → 长事件（如 30min/1h session）会按比例撑开
     private func blockWidths(W: CGFloat) -> [CGFloat] {
-        let maxW = min(W * 0.38, 150.0)
         return events.map { e in
-            max(minBlockW, CGFloat(e.duration / maxEventDuration) * maxW)
+            let proportional = CGFloat(e.duration / axisDuration) * W
+            return max(minBlockW, proportional)
         }
     }
 
