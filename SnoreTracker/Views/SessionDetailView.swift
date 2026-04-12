@@ -208,39 +208,26 @@ struct SnoringTimeline: View {
         return max(session.endTime ?? Date(), latest)
     }
     private var axisDuration: TimeInterval { max(1, axisEnd.timeIntervalSince(axisStart)) }
-    private var maxEventDuration: TimeInterval { events.map { $0.duration }.max() ?? 1 }
 
     private let trackH:    CGFloat = 44
-    private let minBlockW: CGFloat = 6
-    private let maxBlockW: CGFloat = 72  // 最长事件对应的最大块宽
+    private let minBlockW: CGFloat = 4   // 最短事件也要可见
 
     private func blockColor(_ idx: Int) -> Color {
         let p: [Color] = [theme.liveIndicator, theme.accent, theme.snoringAccent, theme.accentLight]
         return p[idx % p.count]
     }
 
-    /// 块宽 = 相对最长事件归一化，最小 minBlockW
-    /// 块 X  = 按时间在 session 中的比例（空白 = 未打呼噜）
-    /// 若相邻块因宽度膨胀产生重叠，前推后拉修正
+    /// 块宽 = 按 session 总时长比例（真实反映各段时长）
+    /// 块 X  = 按时间在 session 中的比例（不做推挤，空白才能正确显现）
     private func layout(W: CGFloat) -> (xs: [CGFloat], ws: [CGFloat]) {
         guard !events.isEmpty else { return ([], []) }
-        let ws: [CGFloat] = events.map { e in
-            max(minBlockW, CGFloat(e.duration / maxEventDuration) * maxBlockW)
-        }
-        var xs: [CGFloat] = events.map { e in
+        let xs: [CGFloat] = events.map { e in
             max(0, CGFloat(e.startTime.timeIntervalSince(axisStart) / axisDuration) * W)
         }
-        for i in 1..<xs.count {
-            if xs[i] < xs[i-1] + ws[i-1] { xs[i] = xs[i-1] + ws[i-1] }
+        let ws: [CGFloat] = events.map { e in
+            max(minBlockW, CGFloat(e.duration / axisDuration) * W)
         }
-        let last = xs.count - 1
-        if xs[last] + ws[last] > W {
-            xs[last] = W - ws[last]
-            for i in stride(from: last - 1, through: 0, by: -1) {
-                if xs[i] > xs[i+1] - ws[i] { xs[i] = xs[i+1] - ws[i] }
-            }
-        }
-        return (xs.map { max(0, $0) }, ws)
+        return (xs, ws)
     }
 
     var body: some View {
