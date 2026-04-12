@@ -184,10 +184,10 @@ struct SessionDetailView: View {
 
 // ══════════════════════════════════════════════════════════════
 // MARK: - NEW: Snoring Timeline（横向水平时间轴）
-//   • X 轴 = session 全程（startTime → endTime）
-//   • 块宽度 = 按时间比例，最小 6pt（无文字，可很窄）
-//   • 相邻块紧贴，无间距，用 clip 实现无缝拼接
-//   • 标签   = 轴起止 HH:mm + 事件开始 HH:mm（重叠时跳过）
+//   • X 轴 = session 全程（startTime → endTime），空白 = 未打呼噜
+//   • 块 X 位置 = 按时间比例（空隙真实反映未打呼噜时段）
+//   • 块宽度   = 相对最长事件归一化（直观体现各次长短差异）
+//   • 标签     = 轴起止 HH:mm + 事件开始 HH:mm（重叠时跳过）
 // ══════════════════════════════════════════════════════════════
 struct SnoringTimeline: View {
     let session: SleepSession
@@ -208,20 +208,24 @@ struct SnoringTimeline: View {
         return max(session.endTime ?? Date(), latest)
     }
     private var axisDuration: TimeInterval { max(1, axisEnd.timeIntervalSince(axisStart)) }
+    private var maxEventDuration: TimeInterval { events.map { $0.duration }.max() ?? 1 }
 
     private let trackH:    CGFloat = 44
-    private let minBlockW: CGFloat = 6   // 无文字，可以很窄
+    private let minBlockW: CGFloat = 6
+    private let maxBlockW: CGFloat = 72  // 最长事件对应的最大块宽
 
     private func blockColor(_ idx: Int) -> Color {
         let p: [Color] = [theme.liveIndicator, theme.accent, theme.snoringAccent, theme.accentLight]
         return p[idx % p.count]
     }
 
-    // gap=0：块紧贴，前推后拉
+    /// 块宽 = 相对最长事件归一化，最小 minBlockW
+    /// 块 X  = 按时间在 session 中的比例（空白 = 未打呼噜）
+    /// 若相邻块因宽度膨胀产生重叠，前推后拉修正
     private func layout(W: CGFloat) -> (xs: [CGFloat], ws: [CGFloat]) {
         guard !events.isEmpty else { return ([], []) }
         let ws: [CGFloat] = events.map { e in
-            max(minBlockW, CGFloat(e.duration / axisDuration) * W)
+            max(minBlockW, CGFloat(e.duration / maxEventDuration) * maxBlockW)
         }
         var xs: [CGFloat] = events.map { e in
             max(0, CGFloat(e.startTime.timeIntervalSince(axisStart) / axisDuration) * W)
