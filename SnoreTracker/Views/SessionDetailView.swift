@@ -248,7 +248,6 @@ struct SnoringTimeline: View {
             let W = size.width
             let labelY = trackH + 6
             let (xs, ws) = layout(W: W)
-            let inset: CGFloat = 6  // 块上下留白，产生浮动胶囊感
 
             // 轨道背景（灰色底，代表整段睡眠时长，空白 = 未打呼噜）
             let trackPath = Path(roundedRect: CGRect(x: 0, y: 0, width: W, height: trackH),
@@ -256,13 +255,16 @@ struct SnoringTimeline: View {
             ctx.fill(trackPath, with: .color(.white.opacity(0.09)))
             ctx.stroke(trackPath, with: .color(.white.opacity(0.14)), lineWidth: 1)
 
-            // 事件块：独立圆角胶囊，宽度反映持续时长，位置反映发生时间
-            for (idx, _) in events.enumerated() {
-                guard idx < xs.count else { continue }
-                let blockRect = CGRect(x: xs[idx], y: inset,
-                                      width: ws[idx], height: trackH - inset * 2)
-                ctx.fill(Path(roundedRect: blockRect, cornerRadius: 7),
-                         with: .color(blockColor(idx).opacity(0.88)))
+            // 事件块：直角矩形，clip 到轨道圆角内，相邻块无间隙
+            ctx.drawLayer { lc in
+                lc.clip(to: trackPath)
+                for (idx, _) in events.enumerated() {
+                    guard idx < xs.count else { continue }
+                    lc.fill(
+                        Path(CGRect(x: xs[idx], y: 0, width: ws[idx], height: trackH)),
+                        with: .color(blockColor(idx).opacity(0.88))
+                    )
+                }
             }
 
             // 标签：HH:mm，位于对应块的中心正下方，重叠时跳过
