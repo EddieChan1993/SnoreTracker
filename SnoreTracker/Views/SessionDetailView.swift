@@ -185,9 +185,9 @@ struct SessionDetailView: View {
 // ══════════════════════════════════════════════════════════════
 // MARK: - NEW: Snoring Timeline（横向水平时间轴）
 //   • X 轴 = session 全程（startTime → endTime）
-//   • 块位置 = 按时间比例，重叠时前推 + 右溢时回拉
-//   • 块宽度 = 相对最长事件归一化（保最小可读宽度）
-//   • 标签   = 轴起止 HH:mm + 每块 HH:mm:ss（重叠时跳过）
+//   • 块宽度 = 按时间比例，最小 6pt（无文字，可很窄）
+//   • 相邻块紧贴，无间距，用 clip 实现无缝拼接
+//   • 标签   = 轴起止 HH:mm + 事件开始 HH:mm（重叠时跳过）
 // ══════════════════════════════════════════════════════════════
 struct SnoringTimeline: View {
     let session: SleepSession
@@ -197,7 +197,6 @@ struct SnoringTimeline: View {
         session.snoringEvents.sorted { $0.startTime < $1.startTime }
     }
 
-    // ── 轴范围：自动延伸确保所有事件都在范围内 ──
     private var axisStart: Date {
         let earliest = events.map { $0.startTime }.min() ?? session.startTime
         return min(session.startTime, earliest)
@@ -209,143 +208,86 @@ struct SnoringTimeline: View {
         return max(session.endTime ?? Date(), latest)
     }
     private var axisDuration: TimeInterval { max(1, axisEnd.timeIntervalSince(axisStart)) }
-    private var maxEventDuration: TimeInterval { events.map { $0.duration }.max() ?? 1 }
 
-    private let trackH:    CGFloat = 52
-    private let minBlockW: CGFloat = 32  // 足够显示"8s"，比之前的 44 小
-    private let blockGap:  CGFloat = 5   // 块之间最小间距
+    private let trackH:    CGFloat = 44
+    private let minBlockW: CGFloat = 6   // 无文字，可以很窄
 
     private func blockColor(_ idx: Int) -> Color {
-        let palette: [Color] = [
-            theme.liveIndicator,
-            theme.accent,
-            theme.snoringAccent,
-            theme.accentLight,
-        ]
-        return palette[idx % palette.count]
+        let p: [Color] = [theme.liveIndicator, theme.accent, theme.snoringAccent, theme.accentLight]
+        return p[idx % p.count]
     }
 
-    /// 各块宽度：按 session 总时长比例定宽
-    /// → 短事件在长 session 里会很窄（取 minBlockW），未打呼噜的灰色段自然显现
-    /// → 长事件（如 30min/1h session）会按比例撑开
-    private func blockWidths(W: CGFloat) -> [CGFloat] {
-        return events.map { e in
-            let proportional = CGFloat(e.duration / axisDuration) * W
-            return max(minBlockW, proportional)
+    // gap=0：块紧贴，前推后拉
+    private func layout(W: CGFloat) -> (xs: [CGFloat], ws: [CGFloat]) {
+        guard !events.isEmpty else { return ([], []) }
+        let ws: [CGFloat] = events.map { e in
+            max(minBlockW, CGFloat(e.duration / axisDuration) * W)
         }
-    }
-
-    /// 各块左边 X（含重叠分离：前推 + 右溢回拉）
-    private func resolvedPositions(W: CGFloat) -> [CGFloat] {
-        guard !events.isEmpty else { return [] }
-        let ws = blockWidths(W: W)
-
-        // 自然位置（按时间比例）
         var xs: [CGFloat] = events.map { e in
-            CGFloat(e.startTime.timeIntervalSince(axisStart) / axisDuration) * W
+            max(0, CGFloat(e.startTime.timeIntervalSince(axisStart) / axisDuration) * W)
         }
-
-        // 前向推：后一块与前一块重叠时向右推
         for i in 1..<xs.count {
-            let minX = xs[i-1] + ws[i-1] + blockGap
-            if xs[i] < minX { xs[i] = minX }
+            if xs[i] < xs[i-1] + ws[i-1] { xs[i] = xs[i-1] + ws[i-1] }
         }
-
-        // 后向拉：末块超出右边界时从右往左拉回
         let last = xs.count - 1
         if xs[last] + ws[last] > W {
             xs[last] = W - ws[last]
             for i in stride(from: last - 1, through: 0, by: -1) {
-                let maxX = xs[i+1] - ws[i] - blockGap
-                if xs[i] > maxX { xs[i] = maxX }
+                if xs[i] > xs[i+1] - ws[i] { xs[i] = xs[i+1] - ws[i] }
             }
         }
-
-        return xs.map { max(0, $0) }
-    }
-
-    private func durationStr(_ t: TimeInterval) -> String {
-        let s = Int(t)
-        return s < 60 ? "\(s)s" : "\(s/60)m\(s%60)s"
+        return (xs.map { max(0, $0) }, ws)
     }
 
     var body: some View {
         Canvas { ctx, size in
             let W = size.width
-            let labelY = trackH + 8
-            let xs  = resolvedPositions(W: W)
-            let ws  = blockWidths(W: W)
+            let labelY = trackH + 6
+            let (xs, ws) = layout(W: W)
 
-            // ── 轨道背景 ──
-            let trackRect = CGRect(x: 0, y: 0, width: W, height: trackH)
-            ctx.fill(Path(roundedRect: trackRect, cornerRadius: 14),
-                     with: .color(.white.opacity(0.06)))
-            ctx.stroke(Path(roundedRect: trackRect, cornerRadius: 14),
-                       with: .color(.white.opacity(0.14)), lineWidth: 1)
+            // 轨道背景
+            let trackPath = Path(roundedRect: CGRect(x: 0, y: 0, width: W, height: trackH),
+                                 cornerRadius: 10)
+            ctx.fill(trackPath, with: .color(.white.opacity(0.07)))
+            ctx.stroke(trackPath, with: .color(.white.opacity(0.12)), lineWidth: 1)
 
-            // ── 事件块 + 块内文字 ──
-            for (idx, event) in events.enumerated() {
-                guard idx < xs.count else { continue }
-                let x  = xs[idx]
-                let bW = ws[idx]
-
-                let blockRect = CGRect(x: x, y: 5, width: bW, height: trackH - 10)
-                ctx.fill(Path(roundedRect: blockRect, cornerRadius: 10),
-                         with: .color(blockColor(idx)))
-
-                ctx.draw(
-                    Text(durationStr(event.duration))
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundColor(.white),
-                    at: CGPoint(x: x + bW / 2, y: trackH / 2),
-                    anchor: .center
-                )
+            // 事件块：clip 到轨道形状，紧贴无缝，无文字
+            ctx.drawLayer { lc in
+                lc.clip(to: trackPath)
+                for (idx, _) in events.enumerated() {
+                    guard idx < xs.count else { continue }
+                    lc.fill(
+                        Path(CGRect(x: xs[idx], y: 0, width: ws[idx], height: trackH)),
+                        with: .color(blockColor(idx))
+                    )
+                }
             }
 
-            // ── 标签区 ──
-            // HH:mm ≈ 34pt (size 10)，HH:mm:ss ≈ 52pt (size 9)
-            let edgeW:    CGFloat = 36
-            let eventHalfW: CGFloat = 28   // 单边宽度（居中时左右各 28pt）
-            let minGap:   CGFloat = 6      // 标签之间最小间距
-            let edgeFmt   = Date.FormatStyle.dateTime.hour().minute()
-            let eventFmt  = Date.FormatStyle.dateTime.hour().minute().second()
-            let labelColor = Color.white.opacity(0.4)
+            // 标签：HH:mm，自然比例位置，重叠跳过
+            let fmt = Date.FormatStyle.dateTime.hour().minute()
+            let lc  = Color.white.opacity(0.45)
+            let labelHalfW: CGFloat = 20
+            let edgeW:      CGFloat = 22
+            let gap:        CGFloat = 6
 
-            // 起始标签（左锚）
-            ctx.draw(
-                Text(axisStart.formatted(edgeFmt))
-                    .font(.system(size: 10)).foregroundColor(labelColor),
-                at: CGPoint(x: 0, y: labelY), anchor: .topLeading
-            )
-            // 结束标签（右锚）
-            ctx.draw(
-                Text(axisEnd.formatted(edgeFmt))
-                    .font(.system(size: 10)).foregroundColor(labelColor),
-                at: CGPoint(x: W, y: labelY), anchor: .topTrailing
-            )
+            ctx.draw(Text(axisStart.formatted(fmt)).font(.system(size: 10)).foregroundColor(lc),
+                     at: CGPoint(x: 0, y: labelY), anchor: .topLeading)
+            ctx.draw(Text(axisEnd.formatted(fmt)).font(.system(size: 10)).foregroundColor(lc),
+                     at: CGPoint(x: W, y: labelY), anchor: .topTrailing)
 
-            // 事件时间标签：顺序扫描，维护「上一个标签的右边界」
-            // 同时确保不侵入右侧 edgeW 区域
-            var prevRight: CGFloat = edgeW + minGap
-            let rightBound: CGFloat = W - edgeW - minGap
+            var prevRight: CGFloat = edgeW + gap
+            let rightBound: CGFloat = W - edgeW - gap
 
-            for (idx, event) in events.enumerated() {
-                guard idx < xs.count else { continue }
-                let centerX = xs[idx] + ws[idx] / 2
-                let lx = centerX - eventHalfW
-                let rx = centerX + eventHalfW
-
-                guard lx >= prevRight && rx <= rightBound else { continue }
-
-                ctx.draw(
-                    Text(event.startTime.formatted(eventFmt))
-                        .font(.system(size: 9)).foregroundColor(labelColor),
-                    at: CGPoint(x: centerX, y: labelY), anchor: .top
-                )
-                prevRight = rx + minGap
+            for event in events {
+                let natX = CGFloat(event.startTime.timeIntervalSince(axisStart) / axisDuration) * W
+                let cx = max(edgeW + labelHalfW, min(W - edgeW - labelHalfW, natX))
+                guard cx - labelHalfW >= prevRight && cx + labelHalfW <= rightBound else { continue }
+                ctx.draw(Text(event.startTime.formatted(fmt)).font(.system(size: 10)).foregroundColor(lc),
+                         at: CGPoint(x: cx, y: labelY), anchor: .top)
+                prevRight = cx + labelHalfW + gap
             }
         }
-        .frame(height: trackH + 32)
+        .frame(height: trackH + 26)
     }
 }
 
