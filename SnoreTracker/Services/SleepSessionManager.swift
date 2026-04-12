@@ -126,9 +126,9 @@ class SleepSessionManager: ObservableObject {
         todaySession = session
         store.updateSession(session)
 
-        // 启动实时计时器
+        // 实时计时器：0.5s 足够更新文字标签，比 0.1s 省 80% 唤醒
         liveSnoreDuration = 0
-        liveTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+        liveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self, let start = self.currentEventStart else { return }
             self.liveSnoreDuration = Date().timeIntervalSince(start)
         }
