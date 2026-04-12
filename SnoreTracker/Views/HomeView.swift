@@ -221,14 +221,6 @@ struct HomeView: View {
                 }
             }
 
-            // 波形
-            LiveWaveform(level: sessionManager.currentLevel,
-                         isSnoring: sessionManager.isSnoring,
-                         accent: theme.accent,
-                         snoringAccent: theme.snoringAccent)
-                .frame(height: 40)
-                .padding(.horizontal, 40)
-
             // 今晚统计卡
             nightStatsCard
 
@@ -330,33 +322,6 @@ struct HomeView: View {
         let t = Int(s); let m = t / 60; let sec = t % 60
         if m > 0 { return "\(m)m\(sec)s" }
         return "\(sec)s"
-    }
-}
-
-// MARK: - Live Waveform
-
-struct LiveWaveform: View {
-    let level: Float
-    let isSnoring: Bool
-    let accent: Color
-    let snoringAccent: Color
-    private let count = 30
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<count, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(isSnoring ? snoringAccent.opacity(0.8) : accent.opacity(0.7))
-                    .frame(width: 3, height: barHeight(i))
-                    .animation(.easeInOut(duration: 0.1), value: level)
-            }
-        }
-    }
-
-    private func barHeight(_ i: Int) -> CGFloat {
-        guard level > 0.01 else { return 4 }
-        let noise = abs(sin(Float(i) * 0.8 + level * 12))
-        return max(4, CGFloat(level * noise) * 38)
     }
 }
 

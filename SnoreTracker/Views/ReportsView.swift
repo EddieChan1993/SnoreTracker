@@ -154,8 +154,12 @@ struct SessionRowView: View {
     }
 
     private func formatDuration(_ t: TimeInterval) -> String {
-        let h = Int(t) / 3600; let m = (Int(t) % 3600) / 60
+        let total = Int(max(0, t))
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
         if h > 0 { return "\(h)h\(m)m" }
-        return "\(m)m"
+        if m > 0 { return "\(m)m" }
+        return "\(s)s"
     }
 }
