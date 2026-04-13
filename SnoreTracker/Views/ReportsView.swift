@@ -49,6 +49,12 @@ struct ReportsView: View {
                     }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
+                    // 修复：List 弹跳区/顶部露出 UITableView 黑色背景
+                    .background(
+                        LinearGradient(colors: theme.bgColors,
+                                       startPoint: .topLeading,
+                                       endPoint: .bottomTrailing)
+                    )
                 }
             }
         }
