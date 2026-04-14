@@ -26,9 +26,29 @@ class SleepSessionManager: ObservableObject {
     init(store: SleepStore) {
         self.store = store
         setupBindings()
+        recoverOrphanedSessions()   // 修复上次异常退出留下的未关闭 Session
         audioService.checkPermission()
         permissionGranted = audioService.permissionGranted
         // 不自动开始，等用户手动点击开启
+    }
+
+    /// 处理上次 App 被强杀 / 崩溃导致 endTime 未写入的 Session：
+    /// - 有呼噜事件 → 用最后一个事件的结束时间补 endTime
+    /// - 无呼噜事件 → 直接删除（空记录无意义）
+    private func recoverOrphanedSessions() {
+        let orphans = store.sessions.filter { $0.endTime == nil }
+        guard !orphans.isEmpty else { return }
+        for var session in orphans {
+            if session.snoringEvents.isEmpty {
+                store.deleteSession(session)
+            } else {
+                let lastEnd = session.snoringEvents.compactMap { $0.endTime }.max()
+                    ?? session.snoringEvents.last?.startTime
+                    ?? session.startTime
+                session.endTime = lastEnd
+                store.updateSession(session)
+            }
+        }
     }
 
     // MARK: - Bindings
