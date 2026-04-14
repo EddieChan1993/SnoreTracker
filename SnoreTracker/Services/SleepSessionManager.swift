@@ -33,22 +33,11 @@ class SleepSessionManager: ObservableObject {
     }
 
     /// 处理上次 App 被强杀 / 崩溃导致 endTime 未写入的 Session：
-    /// - 有呼噜事件 → 用最后一个事件的结束时间补 endTime
-    /// - 无呼噜事件 → 直接删除（空记录无意义）
+    /// - 有呼噜事件 + endTime == nil → 保留，报告页用 Date() 动态显示睡眠时长（视为"截至当前"）
+    /// - 无呼噜事件 + endTime == nil → 直接删除（空记录无意义）
     private func recoverOrphanedSessions() {
-        let orphans = store.sessions.filter { $0.endTime == nil }
-        guard !orphans.isEmpty else { return }
-        for var session in orphans {
-            if session.snoringEvents.isEmpty {
-                store.deleteSession(session)
-            } else {
-                let lastEnd = session.snoringEvents.compactMap { $0.endTime }.max()
-                    ?? session.snoringEvents.last?.startTime
-                    ?? session.startTime
-                session.endTime = lastEnd
-                store.updateSession(session)
-            }
-        }
+        let emptyOrphans = store.sessions.filter { $0.endTime == nil && $0.snoringEvents.isEmpty }
+        emptyOrphans.forEach { store.deleteSession($0) }
     }
 
     // MARK: - Bindings
