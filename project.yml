@@ -21,14 +21,14 @@ targets:
       configs:
         Debug:
           PRODUCT_NAME: SnoreTracker
-          PRODUCT_BUNDLE_IDENTIFIER: com.yourname.SnoreTracker
+          PRODUCT_BUNDLE_IDENTIFIER: com.eddiechan.SnoreTracker
           INFOPLIST_FILE: SnoreTracker/Info.plist
           TARGETED_DEVICE_FAMILY: "1"
           SWIFT_VERSION: "5.9"
           ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         Release:
           PRODUCT_NAME: SnoreTracker
-          PRODUCT_BUNDLE_IDENTIFIER: com.yourname.SnoreTracker
+          PRODUCT_BUNDLE_IDENTIFIER: com.eddiechan.SnoreTracker
           INFOPLIST_FILE: SnoreTracker/Info.plist
           TARGETED_DEVICE_FAMILY: "1"
           SWIFT_VERSION: "5.9"
