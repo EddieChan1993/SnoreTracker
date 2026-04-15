@@ -48,7 +48,6 @@ struct ReportsView: View {
                         }
                     }
                     .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
                     // 修复：List 弹跳区/顶部露出 UITableView 黑色背景
                     .background(
                         LinearGradient(colors: theme.bgColors,
@@ -62,6 +61,10 @@ struct ReportsView: View {
             SessionDetailView(session: session)
                 .environmentObject(store)
                 .environmentObject(themeManager)
+        }
+        .onAppear {
+            // iOS 15 兼容：用 UITableView.appearance() 替代 scrollContentBackground
+            UITableView.appearance().backgroundColor = .clear
         }
     }
 

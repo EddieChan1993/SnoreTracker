@@ -160,7 +160,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 Text(leftLabel).font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
                 Slider(value: value, in: range).tint(theme.accent)
-                    .onChange(of: value.wrappedValue) { _, _ in onChange() }
+                    .onChange(of: value.wrappedValue) { _ in onChange() }
                 Text(rightLabel).font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
             }
             if !hint.isEmpty {
