@@ -272,7 +272,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.eddiechan.SnoreTracker;
+				PRODUCT_BUNDLE_IDENTIFIER = com.eddiechan.snoretracker.dev;
 				PRODUCT_NAME = SnoreTracker;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -354,7 +354,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.eddiechan.SnoreTracker;
+				PRODUCT_BUNDLE_IDENTIFIER = com.eddiechan.snoretracker.dev;
 				PRODUCT_NAME = SnoreTracker;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
