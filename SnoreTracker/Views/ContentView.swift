@@ -16,7 +16,7 @@ struct ContentView: View {
                 .tabItem { Label("设置", systemImage: "gearshape.fill") }
         }
         .tint(themeManager.current.accent)
-        .onChange(of: themeManager.selectedThemeID) { _, _ in
+        .onChange(of: themeManager.selectedThemeID) { _ in
             applyTabBarAppearance()
         }
         .onAppear {
