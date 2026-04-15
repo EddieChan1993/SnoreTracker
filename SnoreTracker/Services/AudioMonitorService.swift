@@ -2,70 +2,61 @@ import AVFoundation
 import Accelerate
 import Combine
 
-// MARK: - SnoringDetector（FFT 频率分析）
+// MARK: - SnoringDetector
 
-/// 综合 RMS 振幅 + 低频能量占比判断呼噜声。
-/// 性能优化：所有 FFT 缓冲区在 init 时预分配，Hann 窗预计算，避免每帧 malloc。
+/// FFT 呼噜频率分析器。所有缓冲区 init 时预分配，Hann 窗预计算，零运行时 malloc。
 final class SnoringDetector {
 
-    private let fftSize  = 4096
-    private let log2n:   vDSP_Length
+    private let fftSize:  Int
+    private let log2n:    vDSP_Length
     private var fftSetup: FFTSetup?
 
-    // ── 预分配缓冲区（避免每帧 ~80 KB malloc） ──
     private var samples: [Float]
-    private var window:  [Float]   // Hann 窗，init 时计算一次
+    private var window:  [Float]
     private var realp:   [Float]
     private var imagp:   [Float]
     private var mags:    [Float]
 
-    // ── 预计算频段 bin 下标（采样率固定，无需每帧重算） ──
-    private let snoreLo: Int   // 80 Hz
-    private let snoreHi: Int   // 500 Hz
-    private let highLo:  Int   // 1000 Hz
-    private let highHi:  Int   // 6000 Hz
+    private let snoreLo: Int
+    private let snoreHi: Int
+    private let highLo:  Int
+    private let highHi:  Int
 
     init(sampleRate: Float) {
-        let half = fftSize / 2
-        log2n   = vDSP_Length(log2f(Float(fftSize)))
-        fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
+        // 呼噜最高关注频率 6000 Hz → Nyquist 12000 Hz → 16000 Hz 采样率足够
+        // 实际采样率由硬件决定，2048 point FFT 已足够分辨率
+        let size  = 2048
+        fftSize   = size
+        log2n     = vDSP_Length(log2f(Float(size)))
+        fftSetup  = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
 
-        samples = [Float](repeating: 0, count: fftSize)
-        window  = [Float](repeating: 0, count: fftSize)
-        realp   = [Float](repeating: 0, count: half)
-        imagp   = [Float](repeating: 0, count: half)
-        mags    = [Float](repeating: 0, count: half)
+        let half  = size / 2
+        samples   = [Float](repeating: 0, count: size)
+        window    = [Float](repeating: 0, count: size)
+        realp     = [Float](repeating: 0, count: half)
+        imagp     = [Float](repeating: 0, count: half)
+        mags      = [Float](repeating: 0, count: half)
 
-        // Hann 窗只算一次
-        vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        vDSP_hann_window(&window, vDSP_Length(size), Int32(vDSP_HANN_NORM))
 
-        // 固定频段 bin
-        let binW  = sampleRate / Float(fftSize)
+        let binW  = sampleRate / Float(size)
         snoreLo   = max(1,    Int(80   / binW))
         snoreHi   = min(half, Int(500  / binW))
         highLo    = min(half, Int(1000 / binW))
         highHi    = min(half, Int(6000 / binW))
     }
 
-    deinit {
-        if let s = fftSetup { vDSP_destroy_fftsetup(s) }
-    }
+    deinit { if let s = fftSetup { vDSP_destroy_fftsetup(s) } }
 
-    /// 返回 0~1 呼噜得分（在 audio 线程调用，无内存分配）
-    func score(buffer: AVAudioPCMBuffer, minimumRMS: Float) -> Float {
-        guard let setup = fftSetup,
+    /// 呼噜得分（0~1）。接受外部预算好的 rms，避免在 process() 里重复计算。
+    func score(buffer: AVAudioPCMBuffer, rms: Float, minimumRMS: Float) -> Float {
+        guard rms >= minimumRMS,
+              let setup = fftSetup,
               let raw   = buffer.floatChannelData?[0] else { return 0 }
 
-        let n = Int(buffer.frameLength)
-        guard n > 0 else { return 0 }
-
-        // 1. RMS 门槛（最廉价，优先排除静音帧）
-        var rms: Float = 0
-        vDSP_rmsqv(raw, 1, &rms, vDSP_Length(n))
-        guard rms >= minimumRMS else { return 0 }
-
-        // 2. 拷贝到预分配缓冲区（无新 malloc）
+        let n       = Int(buffer.frameLength)
         let copyLen = min(n, fftSize)
+
         samples.withUnsafeMutableBufferPointer { buf in
             buf.baseAddress!.update(from: raw, count: copyLen)
             if copyLen < fftSize {
@@ -73,10 +64,8 @@ final class SnoringDetector {
             }
         }
 
-        // 3. 加窗（预计算 Hann 窗）
         vDSP_vmul(samples, 1, window, 1, &samples, 1, vDSP_Length(fftSize))
 
-        // 4. 实数 FFT（预分配 split-complex 缓冲区）
         realp.withUnsafeMutableBufferPointer { rBuf in
             imagp.withUnsafeMutableBufferPointer { iBuf in
                 var split = DSPSplitComplex(realp: rBuf.baseAddress!, imagp: iBuf.baseAddress!)
@@ -92,7 +81,6 @@ final class SnoringDetector {
             }
         }
 
-        // 5. 频段能量（直接指针偏移，避免 Array 切片副本）
         func bandSum(_ lo: Int, _ hi: Int) -> Float {
             guard hi > lo else { return 0 }
             var s: Float = 0
@@ -102,14 +90,12 @@ final class SnoringDetector {
             return s
         }
 
-        let snoreEnergy = bandSum(snoreLo, snoreHi)
-        let highEnergy  = bandSum(highLo,  highHi)
-        let totalEnergy = bandSum(1,       highHi)
-        guard totalEnergy > 0 else { return 0 }
+        let snoreE = bandSum(snoreLo, snoreHi)
+        let highE  = bandSum(highLo,  highHi)
+        let totalE = bandSum(1,       highHi)
+        guard totalE > 0 else { return 0 }
 
-        let snoreRatio = snoreEnergy / totalEnergy
-        let highRatio  = highEnergy  / totalEnergy
-        return snoreRatio * max(0, 1 - highRatio * 1.5)
+        return (snoreE / totalE) * max(0, 1 - (highE / totalE) * 1.5)
     }
 }
 
@@ -117,38 +103,34 @@ final class SnoringDetector {
 
 class AudioMonitorService: ObservableObject {
 
-    // MARK: Published
-    @Published var isMonitoring   = false
-    @Published var isSnoring      = false
-    @Published var currentLevel:  Float = 0
+    @Published var isMonitoring      = false
+    @Published var isSnoring         = false
+    @Published var currentLevel:     Float = 0
     @Published var permissionGranted = false
 
-    // MARK: Callbacks
     var onSnoringStarted: ((String) -> Void)?
     var onSnoringStopped: (() -> Void)?
-    var onError: ((String) -> Void)?
+    var onError:          ((String) -> Void)?
 
-    // MARK: Config（启动时从 UserDefaults 恢复）
     var minimumRMS:          Float        = 0.02
     var snoreScoreThreshold: Float        = 0.40
     var confirmDelay:        TimeInterval = 1.0
     var silenceDelay:        TimeInterval = 5.0
 
-    // MARK: Private
     private var audioEngine   = AVAudioEngine()
     private var recordingFile: AVAudioFile?
     private var isRecording   = false
     private var detector:     SnoringDetector?
-
     private var confirmTimer: Timer?
     private var silenceTimer: Timer?
 
     private let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
-    // ── 节流控制（audio 线程私有，无需加锁） ──
+    // audio 线程私有，无需加锁
     private var lastIsLoud:   Bool   = false
-    private var frameCount:   UInt8  = 0       // 溢出自动归零，无需 % 保护
-    private var smoothLevel:  Float  = 0       // 平滑在 audio 线程做，减少主线程计算
+    private var frameCount:   UInt8  = 0
+    private var smoothLevel:  Float  = 0
+    private var stableFrames: UInt8  = 0   // 连续同状态帧数，用于跳过 FFT
 
     // MARK: - Init
     init() {
@@ -177,8 +159,14 @@ class AudioMonitorService: ObservableObject {
         guard permissionGranted, !isMonitoring else { return }
         do {
             let s = AVAudioSession.sharedInstance()
-            try s.setCategory(.playAndRecord, mode: .default,
-                              options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers])
+            // .measurement 模式：专为音频采集设计，比 .default 更省电
+            try s.setCategory(.playAndRecord, mode: .measurement,
+                              options: [.allowBluetoothHFP, .mixWithOthers])
+            // 请求 16000 Hz：呼噜检测最高关注 6000 Hz，16000 Hz Nyquist 足够
+            // 减少 DSP 管线数据量约 64%（若硬件支持）
+            try s.setPreferredSampleRate(16000)
+            // 请求 200ms IO 缓冲：减少 CPU 唤醒次数至 ~5 次/秒（原 ~10 次/秒）
+            try s.setPreferredIOBufferDuration(0.2)
             try s.setActive(true)
         } catch {
             onError?("音频会话失败: \(error.localizedDescription)"); return
@@ -191,8 +179,10 @@ class AudioMonitorService: ObservableObject {
         lastIsLoud  = false
         frameCount  = 0
         smoothLevel = 0
+        stableFrames = 0
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buf, _ in
+        // bufferSize 8192：进一步降低回调频率，每次回调处理更多帧
+        input.installTap(onBus: 0, bufferSize: 8192, format: format) { [weak self] buf, _ in
             self?.process(buffer: buf)
         }
 
@@ -220,28 +210,42 @@ class AudioMonitorService: ObservableObject {
     // MARK: - Audio Processing（audio 线程）
 
     private func process(buffer: AVAudioPCMBuffer) {
-        // 录音写文件（必须每帧处理）
         if isRecording, let file = recordingFile {
             try? file.write(from: buffer)
         }
 
-        // 呼噜得分
-        let score   = detector?.score(buffer: buffer, minimumRMS: minimumRMS) ?? 0
+        // RMS 计算一次，同时用于：① FFT 门控 ② UI 平滑 ③ 静默跳过判断
+        var rms: Float = 0
+        if let data = buffer.floatChannelData?[0] {
+            vDSP_rmsqv(data, 1, &rms, vDSP_Length(buffer.frameLength))
+        }
+
+        // 连续静音优化：静音且状态稳定超过 8 帧时跳过整个 FFT 调用
+        // 典型睡眠场景：大部分时间安静 → 节省绝大多数夜晚的 FFT 开销
+        let clearlyQuiet = rms < minimumRMS * 0.5
+        if clearlyQuiet && !lastIsLoud && stableFrames > 8 {
+            frameCount &+= 1
+            if frameCount % 5 == 0 {
+                smoothLevel = 0.7 * smoothLevel + 0.3 * rms
+                let level = smoothLevel
+                DispatchQueue.main.async { [weak self, level] in self?.currentLevel = level }
+            }
+            return
+        }
+
+        // FFT 分析
+        let score   = detector?.score(buffer: buffer, rms: rms, minimumRMS: minimumRMS) ?? 0
         let isLoud  = score >= snoreScoreThreshold
         let changed = isLoud != lastIsLoud
-        lastIsLoud  = isLoud
 
-        // UI 波形节流：每 3 帧更新一次（~3.5 Hz），状态变化立即派发
+        stableFrames = changed ? 0 : min(255, stableFrames &+ 1)
+        lastIsLoud   = isLoud
+
         frameCount  &+= 1
         let sendUI  = frameCount % 3 == 0
 
         guard changed || sendUI else { return }
 
-        // RMS + 平滑（在 audio 线程计算，减少主线程负担）
-        var rms: Float = 0
-        if let data = buffer.floatChannelData?[0] {
-            vDSP_rmsqv(data, 1, &rms, vDSP_Length(buffer.frameLength))
-        }
         smoothLevel = 0.7 * smoothLevel + 0.3 * rms
         let level   = smoothLevel
 
@@ -258,8 +262,7 @@ class AudioMonitorService: ObservableObject {
         silenceTimer?.invalidate(); silenceTimer = nil
         if !isSnoring && confirmTimer == nil {
             confirmTimer = Timer.scheduledTimer(withTimeInterval: confirmDelay, repeats: false) { [weak self] _ in
-                self?.confirmTimer = nil
-                self?.beginSnoring()
+                self?.confirmTimer = nil; self?.beginSnoring()
             }
         }
     }
@@ -268,8 +271,7 @@ class AudioMonitorService: ObservableObject {
         confirmTimer?.invalidate(); confirmTimer = nil
         if isSnoring && silenceTimer == nil {
             silenceTimer = Timer.scheduledTimer(withTimeInterval: silenceDelay, repeats: false) { [weak self] _ in
-                self?.silenceTimer = nil
-                self?.endSnoring()
+                self?.silenceTimer = nil; self?.endSnoring()
             }
         }
     }
