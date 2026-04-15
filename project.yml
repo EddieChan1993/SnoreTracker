@@ -2,7 +2,7 @@ name: SnoreTracker
 options:
   bundleIdPrefix: com.yourname
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "15.0"
 
 configs:
   Debug: debug
@@ -12,7 +12,7 @@ targets:
   SnoreTracker:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "15.0"
     sources:
       - path: SnoreTracker
         excludes:

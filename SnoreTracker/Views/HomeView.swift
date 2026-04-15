@@ -213,7 +213,10 @@ struct HomeView: View {
                                                  startPoint: .top, endPoint: .bottom)
                                 : LinearGradient(colors: [theme.accentLight, theme.accent],
                                                  startPoint: .top, endPoint: .bottom))
-                        .symbolEffect(.pulse, isActive: sessionManager.isSnoring)
+                        .opacity(sessionManager.isSnoring ? 1.0 : 0.6)
+                        .scaleEffect(sessionManager.isSnoring ? 1.05 : 1.0)
+                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true),
+                                   value: sessionManager.isSnoring)
 
                     Text(sessionManager.isSnoring ? "正在录音..." : "静默监测中")
                         .font(.system(size: 13, weight: .medium))

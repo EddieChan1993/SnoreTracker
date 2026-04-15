@@ -162,11 +162,11 @@ class AudioMonitorService: ObservableObject {
     // MARK: - Permission
 
     func checkPermission() {
-        permissionGranted = AVAudioApplication.shared.recordPermission == .granted
+        permissionGranted = AVAudioSession.sharedInstance().recordPermission == .granted
     }
 
     func requestPermission(completion: @escaping (Bool) -> Void) {
-        AVAudioApplication.requestRecordPermission { granted in
+        AVAudioSession.sharedInstance().requestRecordPermission { granted in
             DispatchQueue.main.async { self.permissionGranted = granted; completion(granted) }
         }
     }
