@@ -247,6 +247,7 @@ struct ThemeOptionRow: View {
             .padding(10)
             .background(isSelected ? theme.accent.opacity(0.12) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 14))
+            .contentShape(Rectangle())   // 整行都可点击
         }
         .buttonStyle(.plain)
     }

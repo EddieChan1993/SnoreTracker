@@ -5,6 +5,7 @@ struct ReportsView: View {
     @EnvironmentObject var sessionManager: SleepSessionManager
     @EnvironmentObject var themeManager: ThemeManager
     @State private var selectedSession: SleepSession?
+    @State private var listID = UUID()   // 切换 tab 回来时重置滑动状态
 
     private var theme: AppTheme { themeManager.current }
 
@@ -47,6 +48,7 @@ struct ReportsView: View {
                                 .listRowInsets(EdgeInsets(top: 6, leading: 20, bottom: 6, trailing: 20))
                         }
                     }
+                    .id(listID)       // 重置时强制重建 List，收起所有滑动行
                     .listStyle(.plain)
                     // 修复：List 弹跳区/顶部露出 UITableView 黑色背景
                     .background(
@@ -65,6 +67,8 @@ struct ReportsView: View {
         .onAppear {
             // iOS 15 兼容：用 UITableView.appearance() 替代 scrollContentBackground
             UITableView.appearance().backgroundColor = .clear
+            // 切换 tab 回来时重置 List，收起所有已展开的滑动行
+            listID = UUID()
         }
     }
 
