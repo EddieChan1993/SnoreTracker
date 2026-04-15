@@ -1,12 +1,12 @@
 # SnoreTracker — Claude Project Guide
 
 ## Project Overview
-iOS app (SwiftUI, iOS 17+) that passively monitors microphone in the background, detects snoring via FFT frequency analysis, auto-records snoring events, and displays nightly sleep reports.
+iOS app (SwiftUI, iOS 15+) that manually-triggered background microphone monitoring, detects snoring via FFT frequency analysis, auto-records each snoring event, and displays per-session sleep reports.
 
 ## Project Structure
 ```
 SnoreTracker/
-├── project.yml                          # xcodegen config — run `xcodegen generate` to regenerate .xcodeproj
+├── project.yml                          # xcodegen config — deploymentTarget: 15.0
 ├── SnoreTracker/
 │   ├── SnoreTrackerApp.swift            # App entry point; injects ThemeManager as @EnvironmentObject
 │   ├── Info.plist                       # NSMicrophoneUsageDescription, UIBackgroundModes: audio
@@ -15,58 +15,82 @@ SnoreTracker/
 │   │   └── SleepModels.swift            # SnoringEvent, SleepSession (Codable, Identifiable)
 │   ├── Services/
 │   │   ├── AudioMonitorService.swift    # AVAudioEngine tap + FFT snoring detection + recording
-│   │   └── SleepSessionManager.swift   # ObservableObject bridging audio service ↔ SwiftUI; toggleMonitoring()
+│   │   ├── SleepSessionManager.swift    # ObservableObject bridging audio service ↔ SwiftUI
+│   │   └── SleepStore.swift             # JSON persistence to Documents/sleep_sessions.json
 │   ├── Theme/
-│   │   ├── AppTheme.swift               # AppTheme struct with semantic color tokens; .dark + .fruitJelly themes
-│   │   └── ThemeManager.swift           # ObservableObject; @AppStorage("selectedThemeID"); current: AppTheme
+│   │   ├── AppTheme.swift               # AppTheme struct with semantic color tokens
+│   │   └── ThemeManager.swift           # ObservableObject; @AppStorage("selectedThemeID")
 │   └── Views/
 │       ├── ContentView.swift            # TabView: 监测 / 报告 / 设置; applies theme to tab bar
-│       ├── HomeView.swift               # Live monitoring UI; stoppedView + monitoringView; LiveWaveform
-│       ├── ReportsView.swift            # Session list with swipe-to-delete; SessionRowView(theme:)
-│       ├── SessionDetailView.swift      # Detail: summary card, SnoringTimeline, recordings playback
+│       ├── HomeView.swift               # Manual start/stop; circle level indicator
+│       ├── ReportsView.swift            # Per-session list with swipe-to-delete
+│       ├── SessionDetailView.swift      # Summary card, SnoringTimeline, recordings playback
 │       └── SettingsView.swift           # Sensitivity sliders, theme picker, data management
 ```
 
 ## Key Architecture Decisions
 
+### Session Lifecycle
+- **Manual start only** — no auto-start on launch; user taps "开始监测"
+- **Each start = new SleepSession** — `toggleMonitoring()` calls `startNewSession()` every time
+- **Stop writes endTime** — `closeCurrentSession()` stamps `endTime = Date()` and persists
+- **Orphan recovery on launch** — `recoverOrphanedSessions()` in `SleepSessionManager.init()`:
+  - Sessions with events + `endTime == nil` → set `endTime = Date()` and save (app was force-killed)
+  - Sessions with no events + `endTime == nil` → delete (empty, no useful data)
+
 ### Theme System
-- `AppTheme` struct has semantic color tokens: `bgColors`, `bgSnoringColors`, `accent`, `accentLight`, `snoringAccent`, `liveIndicator`, `tabBarBackground`, `cardOpacity`
-- `ThemeManager: ObservableObject` with `@AppStorage("selectedThemeID")` — persists selected theme across launches
-- All views access theme via `@EnvironmentObject var themeManager: ThemeManager`, using `themeManager.current`
+- `AppTheme` struct: `bgColors`, `bgSnoringColors`, `accent`, `accentLight`, `snoringAccent`, `liveIndicator`, `tabBarBackground`, `cardOpacity`
+- `ThemeManager: ObservableObject` with `@AppStorage("selectedThemeID")` — persists across launches
+- All views: `@EnvironmentObject var themeManager: ThemeManager`, use `themeManager.current.xxx`
 - Two themes: `.dark` (deep navy/blue) and `.fruitJelly` (purple-berry/pink/mint/orange)
 
 ### Snoring Detection (AudioMonitorService.swift)
-- **Not RMS-only**: Uses FFT (4096-point, Accelerate/vDSP) to analyze frequency content
+- **Algorithm**: RMS gate → 2048-point FFT (Accelerate/vDSP) → band energy ratio
 - **Snoring band**: 80–500 Hz; **High-freq band**: 1000–6000 Hz
-- **Score formula**: `snoreRatio * max(0, 1 - highRatio * 1.5)` — rewards low-freq energy, penalizes whistle/speech
-- **State machine**: `onLoud()` → 1s `confirmTimer` → `beginSnoring()`; `onSilent()` → 5s `silenceTimer` → `endSnoring()`
-- `init()` reads all 4 settings from `UserDefaults` on launch (`minimumRMS`, `snoreScoreThreshold`, `confirmDelay`, `silenceDelay`)
-- Recording written directly in audio thread via `AVAudioFile.write(from:)`
+- **Score**: `snoreRatio * max(0, 1 - highRatio * 1.5)` — rewards low-freq, penalizes speech/whistle
+- **State machine**: `onLoud()` → `confirmTimer` → `beginSnoring()`; `onSilent()` → `silenceTimer` → `endSnoring()`
+- Settings restored from `UserDefaults` in `init()`: `minimumRMS`, `snoreScoreThreshold`, `confirmDelay`, `silenceDelay`
 
-### Background Audio
-- `AVAudioSession` category: `.playAndRecord` with `.mixWithOthers`
-- `UIBackgroundModes: audio` in Info.plist
+### Performance Optimizations (AudioMonitorService.swift)
+- **SnoringDetector**: all FFT buffers pre-allocated in `init()` (zero per-frame malloc); Hann window pre-computed once; bin indices pre-computed
+- **Sample rate**: requests `preferredSampleRate(16000)` — 64% less DSP data vs 44100 Hz
+- **Buffer size**: 8192 frames + `preferredIOBufferDuration(0.2s)` → ~5 CPU wake-ups/sec (was ~10)
+- **FFT size**: 2048 (was 4096) — half the computation, still >7 Hz resolution for snoring bands
+- **RMS computed once** per frame, passed into `score()` — no duplicate `vDSP_rmsqv` call
+- **stableFrames gate**: if clearly silent (rms < 50% threshold) and stable 8+ frames → skip `score()` entirely; UI updates every 5 frames (~1 Hz) during quiet periods
+- **State dispatch**: main thread dispatched only on loud/silent transition or UI throttle tick (~3.5 Hz)
+- **Session mode**: `.measurement` (optimized for capture apps vs `.default`)
+- **liveTimer**: 0.5s interval (was 0.1s) — sufficient for text label updates
 
-### State Management (SleepSessionManager.swift)
-- `@Published liveSnoreDuration`: driven by a 0.1s `Timer`, shows real-time duration while snoring
-- `toggleMonitoring()`: starts or stops `audioService` based on `isMonitoring` state
-- `deleteSession()` does NOT call `loadOrCreateTodaySession()` — session is lazily re-created next time snoring starts
-- `clearAllData()` resets all published state and stops timers
-
-### Data Persistence (SleepStore.swift)
-- JSON-encoded `[SleepSession]` stored at `Documents/sleep_sessions.json` — survives recompiles
-- Recording audio files: `Documents/snore_<timestamp>.m4a`
-
-### HomeView Settings Display
-- `@AppStorage("silenceDelay") private var silenceDelay: Double = 5.0` — reads persisted value on first render, not `audioService.silenceDelay`
+### Scoring (SleepModels.swift)
+- **Dual metric**: takes the **worse** of snoring-time-percentage and events-per-hour
+- Events/hour thresholds (ref: medical AHI): 优秀 <5, 良好 <15, 一般 <30, 较差 ≥30
+- Percentage thresholds: 优秀 <5%, 良好 <15%, 一般 <30%, 较差 ≥30%
 
 ### SnoringTimeline (SessionDetailView.swift)
-- **X position** = `event.startTime` proportional to full session duration → gaps between blocks = real non-snoring time
-- **Block width** = `event.duration / sessionDuration * trackWidth` (min 4pt) — truly proportional, small events = small ticks
-- **No forward-push algorithm** — blocks stay at natural positions; overlapping is acceptable since events shouldn't overlap in reality
-- Blocks are plain rectangles clipped inside the rounded track via `ctx.drawLayer { lc.clip(to: trackPath) }` — sharp internal edges, rounded outer corners
-- **Labels**: `HH:mm` format at block center x; left/right axis labels at track edges; overlapping labels skipped via `prevRight` cursor
-- Old `SnoringBarChart` (vertical bars) is commented out below and preserved for reference
+- Track background = full session duration; empty = non-snoring time
+- Block X = proportional to `event.startTime` within session
+- Block width = `event.duration / sessionDuration * trackWidth` (min 4pt)
+- Blocks: plain rectangles, no corner radius; clipped to rounded track via `ctx.drawLayer { lc.clip(to:) }`
+- Labels: `HH:mm` at block center x; edges at track start/end; overlapping labels skipped with `prevRight` cursor
+- Old `SnoringBarChart` commented out below for reference
+
+### Background Audio
+- `AVAudioSession` category: `.playAndRecord`, mode: `.measurement`, options: `.mixWithOthers`
+- `UIBackgroundModes: audio` in Info.plist
+
+### Data Persistence
+- `SleepStore`: JSON-encoded `[SleepSession]` at `Documents/sleep_sessions.json` — survives recompiles
+- Recordings: `Documents/snore_<timestamp>.m4a`
+- `addSession()` inserts at index 0 → newest first in list
+
+## iOS Compatibility (iOS 15+)
+All iOS 17/16-only APIs have been replaced:
+- `AVAudioApplication` → `AVAudioSession` (iOS 15 compatible)
+- `.onChange(of:) { _, _ in }` → single-param `{ _ in }` (iOS 17 two-param removed)
+- `.scrollContentBackground(.hidden)` → `UITableView.appearance().backgroundColor = .clear`
+- `.symbolEffect(.pulse)` → `opacity + scaleEffect` animation
+- `.contentTransition(.numericText())` → removed
 
 ## Build Instructions
 ```bash
@@ -77,20 +101,22 @@ brew install xcodegen
 cd SnoreTracker
 xcodegen generate
 
-# Open in Xcode
 open SnoreTracker.xcodeproj
 ```
-Then select your device and press Cmd+R.
+Select your device → Cmd+R.
 
-**Important**: Do NOT manually create/edit `.xcscheme` files inside `xcshareddata/` — always let xcodegen manage the project. If a white screen occurs after scheme edits, run:
+**If white screen after scheme edits:**
 ```bash
-rm -rf SnoreTracker.xcodeproj/xcshareddata
-xcodegen generate
+rm -rf SnoreTracker.xcodeproj/xcshareddata && xcodegen generate
 ```
 
+**Bundle ID**: `com.eddiechan.snoretracker.dev` (Personal Team, 7-day provisioning)
+
 ## Common Pitfalls
-- `Color(hex:)` extension is defined in `HomeView.swift` — available globally across the module
-- `SleepStore` is created once in `SnoreTrackerApp.init()` and passed to `SleepSessionManager`; the property default `= SleepStore()` is overridden in init (intentional pattern)
-- FFT uses `withUnsafeMutableBufferPointer` nested closures to stabilize `DSPSplitComplex` pointer — do not refactor to single-level closures
-- `vDSP_sve` is called on `Array` slices (not pointer arithmetic) to avoid Swift strict-concurrency pointer issues
-- Theme colors must use `themeManager.current.xxx` (not hardcoded); all views receive `themeManager` via `.environmentObject(themeManager)` from `SnoreTrackerApp`
+- `Color(hex:)` is defined in `HomeView.swift` — available globally across the module
+- FFT uses nested `withUnsafeMutableBufferPointer` closures to stabilize `DSPSplitComplex` pointer — do not flatten to single-level
+- `vDSP_sve` uses direct pointer offset (`buf.baseAddress! + lo`) — no Array copy per band
+- Theme colors: always `themeManager.current.xxx`, never hardcoded
+- `SleepStore` created once in `SnoreTrackerApp.init()`, passed to `SleepSessionManager`
+- `UITableView.appearance().backgroundColor = .clear` set in `ReportsView.onAppear` for iOS 15 compat
+- List swipe state resets on tab switch via `listID = UUID()` in `ReportsView.onAppear`
