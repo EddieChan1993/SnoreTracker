@@ -7,8 +7,8 @@ import Combine
 /// FFT 呼噜频率分析器。所有缓冲区 init 时预分配，Hann 窗预计算，零运行时 malloc。
 final class SnoringDetector {
 
-    private let fftSize:  Int
-    private let log2n:    vDSP_Length
+    private let fftSize  = 4096
+    private let log2n:   vDSP_Length
     private var fftSetup: FFTSetup?
 
     private var samples: [Float]
@@ -17,48 +17,56 @@ final class SnoringDetector {
     private var imagp:   [Float]
     private var mags:    [Float]
 
+    // 预计算频段 bin（采样率固定后不变）
     private let snoreLo: Int
     private let snoreHi: Int
     private let highLo:  Int
     private let highHi:  Int
 
     init(sampleRate: Float) {
-        // 呼噜最高关注频率 6000 Hz → Nyquist 12000 Hz → 16000 Hz 采样率足够
-        // 实际采样率由硬件决定，2048 point FFT 已足够分辨率
-        let size  = 2048
-        fftSize   = size
-        log2n     = vDSP_Length(log2f(Float(size)))
-        fftSetup  = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
+        let size = 4096
+        log2n    = vDSP_Length(log2f(Float(size)))
+        fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
 
-        let half  = size / 2
-        samples   = [Float](repeating: 0, count: size)
-        window    = [Float](repeating: 0, count: size)
-        realp     = [Float](repeating: 0, count: half)
-        imagp     = [Float](repeating: 0, count: half)
-        mags      = [Float](repeating: 0, count: half)
+        let half = size / 2
+        samples  = [Float](repeating: 0, count: size)
+        window   = [Float](repeating: 0, count: size)
+        realp    = [Float](repeating: 0, count: half)
+        imagp    = [Float](repeating: 0, count: half)
+        mags     = [Float](repeating: 0, count: half)
 
         vDSP_hann_window(&window, vDSP_Length(size), Int32(vDSP_HANN_NORM))
 
-        let binW  = sampleRate / Float(size)
-        snoreLo   = max(1,    Int(80   / binW))
-        snoreHi   = min(half, Int(500  / binW))
-        highLo    = min(half, Int(1000 / binW))
-        highHi    = min(half, Int(6000 / binW))
+        // 若采样率被降至 16000 Hz，bin 宽 = 16000/4096 ≈ 3.9 Hz（分辨率更高）
+        // 若仍为 44100 Hz，bin 宽 = 44100/4096 ≈ 10.8 Hz（同原始设计）
+        let binW = sampleRate / Float(size)
+        snoreLo  = max(1,    Int(80   / binW))
+        snoreHi  = min(half, Int(500  / binW))
+        highLo   = min(half, Int(1000 / binW))
+        highHi   = min(half, Int(6000 / binW))
     }
 
     deinit { if let s = fftSetup { vDSP_destroy_fftsetup(s) } }
 
-    /// 呼噜得分（0~1）。接受外部预算好的 rms，避免在 process() 里重复计算。
+    /// 呼噜得分（0~1）。
+    /// - 接受预算好的 rms，避免重复计算
+    /// - 用等间隔采样覆盖完整缓冲区，避免大 buffer 时只分析前段
     func score(buffer: AVAudioPCMBuffer, rms: Float, minimumRMS: Float) -> Float {
         guard rms >= minimumRMS,
               let setup = fftSetup,
               let raw   = buffer.floatChannelData?[0] else { return 0 }
 
-        let n       = Int(buffer.frameLength)
-        let copyLen = min(n, fftSize)
+        let n = Int(buffer.frameLength)
+        guard n > 0 else { return 0 }
+
+        // 等间隔采样：stride > 1 时覆盖完整缓冲区
+        // 例如 buffer=8192, fftSize=4096 → stride=2, 覆盖全部样本（等效 22050 Hz）
+        // 例如 buffer=4096, fftSize=4096 → stride=1, 直接使用（44100 Hz）
+        let stride   = max(1, n / fftSize)
+        let copyLen  = min(n / stride, fftSize)
 
         samples.withUnsafeMutableBufferPointer { buf in
-            buf.baseAddress!.update(from: raw, count: copyLen)
+            for i in 0..<copyLen { buf[i] = raw[i * stride] }
             if copyLen < fftSize {
                 (buf.baseAddress! + copyLen).initialize(repeating: 0, count: fftSize - copyLen)
             }
@@ -126,11 +134,10 @@ class AudioMonitorService: ObservableObject {
 
     private let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
-    // audio 线程私有，无需加锁
-    private var lastIsLoud:   Bool   = false
-    private var frameCount:   UInt8  = 0
-    private var smoothLevel:  Float  = 0
-    private var stableFrames: UInt8  = 0   // 连续同状态帧数，用于跳过 FFT
+    // audio 线程私有
+    private var lastIsLoud:  Bool  = false
+    private var frameCount:  UInt8 = 0
+    private var smoothLevel: Float = 0
 
     // MARK: - Init
     init() {
@@ -159,13 +166,13 @@ class AudioMonitorService: ObservableObject {
         guard permissionGranted, !isMonitoring else { return }
         do {
             let s = AVAudioSession.sharedInstance()
-            // .measurement 模式：专为音频采集设计，比 .default 更省电
+            // .measurement 模式：专为音频测量设计，比 .default 更省电
             try s.setCategory(.playAndRecord, mode: .measurement,
                               options: [.allowBluetoothHFP, .mixWithOthers])
-            // 请求 16000 Hz：呼噜检测最高关注 6000 Hz，16000 Hz Nyquist 足够
-            // 减少 DSP 管线数据量约 64%（若硬件支持）
+            // 请求 16000 Hz：呼噜检测关注 80–6000 Hz，16000 Hz Nyquist 足够
+            // 若硬件不支持则系统自动回退，不影响检测正确性
             try s.setPreferredSampleRate(16000)
-            // 请求 200ms IO 缓冲：减少 CPU 唤醒次数至 ~5 次/秒（原 ~10 次/秒）
+            // 200ms IO 缓冲：减少 CPU 唤醒至 ~5 次/秒（原 ~10 次）
             try s.setPreferredIOBufferDuration(0.2)
             try s.setActive(true)
         } catch {
@@ -179,9 +186,8 @@ class AudioMonitorService: ObservableObject {
         lastIsLoud  = false
         frameCount  = 0
         smoothLevel = 0
-        stableFrames = 0
 
-        // bufferSize 8192：进一步降低回调频率，每次回调处理更多帧
+        // bufferSize 8192：减少回调次数；score() 内部用等间隔采样覆盖完整缓冲区
         input.installTap(onBus: 0, bufferSize: 8192, format: format) { [weak self] buf, _ in
             self?.process(buffer: buf)
         }
@@ -214,33 +220,18 @@ class AudioMonitorService: ObservableObject {
             try? file.write(from: buffer)
         }
 
-        // RMS 计算一次，同时用于：① FFT 门控 ② UI 平滑 ③ 静默跳过判断
+        // RMS 计算一次，同时用于 FFT 门控和 UI 平滑
         var rms: Float = 0
         if let data = buffer.floatChannelData?[0] {
             vDSP_rmsqv(data, 1, &rms, vDSP_Length(buffer.frameLength))
         }
 
-        // 连续静音优化：静音且状态稳定超过 8 帧时跳过整个 FFT 调用
-        // 典型睡眠场景：大部分时间安静 → 节省绝大多数夜晚的 FFT 开销
-        let clearlyQuiet = rms < minimumRMS * 0.5
-        if clearlyQuiet && !lastIsLoud && stableFrames > 8 {
-            frameCount &+= 1
-            if frameCount % 5 == 0 {
-                smoothLevel = 0.7 * smoothLevel + 0.3 * rms
-                let level = smoothLevel
-                DispatchQueue.main.async { [weak self, level] in self?.currentLevel = level }
-            }
-            return
-        }
-
-        // FFT 分析
         let score   = detector?.score(buffer: buffer, rms: rms, minimumRMS: minimumRMS) ?? 0
         let isLoud  = score >= snoreScoreThreshold
         let changed = isLoud != lastIsLoud
+        lastIsLoud  = isLoud
 
-        stableFrames = changed ? 0 : min(255, stableFrames &+ 1)
-        lastIsLoud   = isLoud
-
+        // UI 节流：每 3 帧更新一次（~1.5 Hz），状态变化立即派发
         frameCount  &+= 1
         let sendUI  = frameCount % 3 == 0
 
