@@ -281,7 +281,6 @@ struct HomeView: View {
             Text(value)
                 .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundColor(.white)
-                .contentTransition(.numericText())
             Text(label)
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.35))
