@@ -172,8 +172,8 @@ class AudioMonitorService: ObservableObject {
             // 请求 16000 Hz：呼噜检测关注 80–6000 Hz，16000 Hz Nyquist 足够
             // 若硬件不支持则系统自动回退，不影响检测正确性
             try s.setPreferredSampleRate(16000)
-            // 200ms IO 缓冲：减少 CPU 唤醒至 ~5 次/秒（原 ~10 次）
-            try s.setPreferredIOBufferDuration(0.2)
+            // 50ms IO 缓冲：~20 次/秒唤醒，电平环视觉流畅
+            try s.setPreferredIOBufferDuration(0.05)
             try s.setActive(true)
         } catch {
             onError?("音频会话失败: \(error.localizedDescription)"); return
@@ -187,8 +187,9 @@ class AudioMonitorService: ObservableObject {
         frameCount  = 0
         smoothLevel = 0
 
-        // bufferSize 8192：减少回调次数；score() 内部用等间隔采样覆盖完整缓冲区
-        input.installTap(onBus: 0, bufferSize: 8192, format: format) { [weak self] buf, _ in
+        // bufferSize 1024：~50ms/次（16kHz），与 preferredIOBufferDuration 匹配
+        // score() 内部用等间隔采样覆盖完整缓冲区，大小变化不影响检测精度
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
             self?.process(buffer: buf)
         }
 
@@ -231,8 +232,9 @@ class AudioMonitorService: ObservableObject {
         let changed = isLoud != lastIsLoud
         lastIsLoud  = isLoud
 
-        // 轻度平滑消除毛刺，动画插值交由 SwiftUI spring 处理
-        smoothLevel = 0.4 * rms + 0.6 * smoothLevel
+        // 非对称平滑：上升快（跟声音），下降慢（视觉余韵）
+        let α       = rms > smoothLevel ? Float(0.6) : Float(0.2)
+        smoothLevel = α * rms + (1 - α) * smoothLevel
         let level   = smoothLevel
 
         frameCount &+= 1
