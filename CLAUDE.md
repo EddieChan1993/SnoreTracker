@@ -54,13 +54,44 @@ SnoreTracker/
 ### Performance Optimizations (AudioMonitorService.swift)
 - **SnoringDetector**: all FFT buffers pre-allocated in `init()` (zero per-frame malloc); Hann window pre-computed once; bin indices pre-computed
 - **Sample rate**: requests `preferredSampleRate(16000)` — 64% less DSP data vs 44100 Hz
-- **Buffer size**: 8192 frames + `preferredIOBufferDuration(0.2s)` → ~5 CPU wake-ups/sec (was ~10)
-- **FFT size**: 2048 (was 4096) — half the computation, still >7 Hz resolution for snoring bands
+- **Buffer size**: `bufferSize: 1024` + `preferredIOBufferDuration(0.05)` → ~20 callbacks/sec; level ring feels responsive
+- **FFT size**: 4096 — stride-based downsampling covers full buffer regardless of size (`stride = max(1, n / fftSize)`)
 - **RMS computed once** per frame, passed into `score()` — no duplicate `vDSP_rmsqv` call
-- **stableFrames gate**: if clearly silent (rms < 50% threshold) and stable 8+ frames → skip `score()` entirely; UI updates every 5 frames (~1 Hz) during quiet periods
-- **State dispatch**: main thread dispatched only on loud/silent transition or UI throttle tick (~3.5 Hz)
 - **Session mode**: `.measurement` (optimized for capture apps vs `.default`)
-- **liveTimer**: 0.5s interval (was 0.1s) — sufficient for text label updates
+- **liveTimer**: 0.5s interval — sufficient for text label updates
+
+### Level Ring Animation
+- EMA smoothing: `smoothLevel = rms > smoothLevel ? rms : 0.2 * rms + 0.8 * smoothLevel` — instant attack, slow decay
+- SwiftUI: `.animation(.spring(response: 0.12, dampingFraction: 0.7), value: currentLevel)`
+- Combine binding in `SleepSessionManager`: **no** `.receive(on: DispatchQueue.main)` — displayTimer already on main thread, async re-dispatch breaks 20 Hz smoothness
+
+## ⚠️ 踩坑记录：性能优化引入的 Bug
+
+> 源于一次"优化 CPU/电量/内存"请求，前后花了大量来回才修复，记录在此避免重蹈。
+
+### 错误改动 → 后果
+
+| 错误改动 | 后果 |
+|----------|------|
+| `bufferSize` 调大到 8192 | 16kHz 下每次回调 = 512ms 音频 → UI **仅 ~2Hz** 更新，电平环极度卡顿 |
+| `preferredIOBufferDuration(0.2)` 配合大 bufferSize | 进一步降低回调率 |
+| `fftSize` 4096 → 2048 | FFT 只分析缓冲区前 25%，呼噜大量漏检 |
+| 加入 `stableFrames` 跳过 FFT | 呼噜刚开始时正好被跳过，造成漏检 |
+
+### 电平环卡顿排查走了 5 次弯路
+
+1. 调 EMA 平滑系数 → 无效
+2. 去掉 Combine `.receive(on: DispatchQueue.main)` → 无效
+3. 加 30Hz `displayTimer` 插值 → 仍卡
+4. 改用 SwiftUI spring 动画 → 仍卡
+5. **找到根因**：bufferSize 太大，数据源本身只有 ~2Hz，动画参数怎么调都没用 ✅
+
+### 核心教训
+
+1. **`bufferSize` 直接决定 UI 刷新率**，不是纯粹的性能参数。调大省 CPU，但电平环会卡，必须权衡。
+2. **遇到视觉卡顿，先查数据源频率，再查动画参数**。数据源慢，动画再好也是无用功。
+3. **`stableFrames` 类"跳过"优化风险极高**——边缘状态下（刚开始打呼噜）会漏检，不值得为边际省电引入。
+4. **性能优化要分离三个维度**：检测精度（fftSize）/ UI 响应（bufferSize、IOBufferDuration）/ 电量（采样率、模式），三者独立评估，不能一刀切。
 
 ### Scoring (SleepModels.swift)
 - **Dual metric**: takes the **worse** of snoring-time-percentage and events-per-hour
