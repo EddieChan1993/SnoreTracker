@@ -60,8 +60,7 @@ class SleepSessionManager: ObservableObject {
             .assign(to: &$isSnoring)
 
         audioService.$currentLevel
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$currentLevel)
+            .assign(to: &$currentLevel)   // displayTimer 已在主线程，无需 receive(on:)
 
         audioService.$permissionGranted
             .receive(on: DispatchQueue.main)
