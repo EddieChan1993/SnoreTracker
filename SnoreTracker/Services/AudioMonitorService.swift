@@ -131,7 +131,6 @@ class AudioMonitorService: ObservableObject {
     private var detector:     SnoringDetector?
     private var confirmTimer: Timer?
     private var silenceTimer: Timer?
-    private var displayTimer: Timer?       // 30 Hz 插值计时器，驱动环状平滑动画
 
     private let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
@@ -139,9 +138,6 @@ class AudioMonitorService: ObservableObject {
     private var lastIsLoud:  Bool  = false
     private var frameCount:  UInt8 = 0
     private var smoothLevel: Float = 0
-
-    // 主线程私有：音频线程写入目标值，displayTimer 每帧插值逼近
-    private var targetLevel: Float = 0
 
     // MARK: - Init
     init() {
@@ -198,17 +194,7 @@ class AudioMonitorService: ObservableObject {
 
         do {
             try audioEngine.start()
-            DispatchQueue.main.async {
-                self.isMonitoring = true
-                // 30 Hz 插值：每帧将 currentLevel 向 targetLevel 平滑逼近
-                // 上升快（α=0.45）下降慢（α=0.12），视觉上丝滑不抖动
-                self.displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-                    guard let self else { return }
-                    let α: Float    = self.targetLevel > self.currentLevel ? 0.45 : 0.12
-                    let next: Float = α * self.targetLevel + (1 - α) * self.currentLevel
-                    if abs(next - self.currentLevel) > 0.0003 { self.currentLevel = next }
-                }
-            }
+            DispatchQueue.main.async { self.isMonitoring = true }
         } catch {
             onError?("引擎启动失败: \(error.localizedDescription)")
         }
@@ -218,13 +204,11 @@ class AudioMonitorService: ObservableObject {
         guard isMonitoring else { return }
         confirmTimer?.invalidate(); silenceTimer?.invalidate()
         confirmTimer = nil; silenceTimer = nil
-        displayTimer?.invalidate(); displayTimer = nil
         finishRecording()
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         DispatchQueue.main.async {
-            self.isMonitoring = false; self.isSnoring = false
-            self.currentLevel = 0; self.targetLevel = 0
+            self.isMonitoring = false; self.isSnoring = false; self.currentLevel = 0
         }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
@@ -247,16 +231,14 @@ class AudioMonitorService: ObservableObject {
         let changed = isLoud != lastIsLoud
         lastIsLoud  = isLoud
 
-        // 轻度平滑 RMS，仅用于消除单帧毛刺；displayTimer 负责视觉插值
-        let α: Float  = rms > smoothLevel ? 0.6 : 0.3
-        smoothLevel   = α * rms + (1 - α) * smoothLevel
-        let level     = smoothLevel
+        // 轻度平滑消除毛刺，动画插值交由 SwiftUI spring 处理
+        smoothLevel = 0.4 * rms + 0.6 * smoothLevel
+        let level   = smoothLevel
 
         frameCount &+= 1
-        // 只更新 targetLevel；displayTimer 在主线程以 30 Hz 平滑逼近
         DispatchQueue.main.async { [weak self, isLoud, changed, level] in
             guard let self else { return }
-            self.targetLevel = level
+            self.currentLevel = level
             if changed { isLoud ? self.onLoud() : self.onSilent() }
         }
     }

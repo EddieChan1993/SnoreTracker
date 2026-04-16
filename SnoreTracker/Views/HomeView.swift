@@ -201,7 +201,7 @@ struct HomeView: View {
                         style: StrokeStyle(lineWidth: 10, lineCap: .round))
                     .frame(width: 190, height: 190)
                     .rotationEffect(.degrees(-90))
-                    .animation(.linear(duration: 1.0 / 30.0), value: sessionManager.currentLevel)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.75), value: sessionManager.currentLevel)
 
                 // 中心图标
                 VStack(spacing: 8) {
