@@ -231,18 +231,17 @@ class AudioMonitorService: ObservableObject {
         let changed = isLoud != lastIsLoud
         lastIsLoud  = isLoud
 
-        // UI 节流：每 3 帧更新一次（~1.5 Hz），状态变化立即派发
-        frameCount  &+= 1
-        let sendUI  = frameCount % 3 == 0
+        // 快速平滑：α=0.5 上升快，α=0.15 下降慢，环状响应灵敏但不抖动
+        let α: Float  = rms > smoothLevel ? 0.5 : 0.15
+        smoothLevel   = α * rms + (1 - α) * smoothLevel
+        let level     = smoothLevel
 
-        guard changed || sendUI else { return }
-
-        smoothLevel = 0.7 * smoothLevel + 0.3 * rms
-        let level   = smoothLevel
-
-        DispatchQueue.main.async { [weak self, isLoud, changed, level, sendUI] in
+        // 每帧都派发 level（回调已限速 ~5次/秒，主线程压力极小）
+        // 状态变化单独派发，不依赖节流
+        frameCount &+= 1
+        DispatchQueue.main.async { [weak self, isLoud, changed, level] in
             guard let self else { return }
-            if sendUI  { self.currentLevel = level }
+            self.currentLevel = level
             if changed { isLoud ? self.onLoud() : self.onSilent() }
         }
     }
