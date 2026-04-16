@@ -232,9 +232,9 @@ class AudioMonitorService: ObservableObject {
         let changed = isLoud != lastIsLoud
         lastIsLoud  = isLoud
 
-        // 非对称平滑：上升快（跟声音），下降慢（视觉余韵）
-        let α       = rms > smoothLevel ? Float(0.6) : Float(0.2)
-        smoothLevel = α * rms + (1 - α) * smoothLevel
+        // 上升：直接取 rms，环立即跟上声音
+        // 下降：α=0.2 缓慢衰减，视觉余韵自然
+        smoothLevel = rms > smoothLevel ? rms : 0.2 * rms + 0.8 * smoothLevel
         let level   = smoothLevel
 
         frameCount &+= 1
