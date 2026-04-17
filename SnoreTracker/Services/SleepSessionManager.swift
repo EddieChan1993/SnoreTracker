@@ -21,6 +21,10 @@ class SleepSessionManager: ObservableObject {
     private var currentEventID:    UUID?
     private var currentEventStart: Date?
     private var liveTimer:         Timer?
+    private var heartbeatTimer:    Timer?   // 每 60s 写入最后活跃时间，用于崩溃恢复
+
+    private static let heartbeatKey  = "monitoringHeartbeat"
+    private static let minSessionDuration: TimeInterval = 5 * 60  // 少于 5 分钟的空 session 视为无效
 
     // MARK: - Init（不自动开始监测）
     init(store: SleepStore) {
@@ -33,16 +37,26 @@ class SleepSessionManager: ObservableObject {
     }
 
     /// 处理上次 App 被强杀 / 崩溃导致 endTime 未写入的 Session：
-    /// - 有呼噜事件 + endTime == nil → 用当前时间写入 endTime 并持久化（固定时长，不再增长）
-    /// - 无呼噜事件 + endTime == nil → 直接删除（空记录无意义）
+    /// - 用心跳时间戳估算实际结束时间（比 Date() 准确）
+    /// - 有呼噜事件 → 保留并写入 endTime
+    /// - 无呼噜事件但监测超过 5 分钟 → 保留（用户想看到"监测了但没打呼噜"）
+    /// - 无呼噜事件且监测不足 5 分钟 → 删除（刚开就崩，无意义）
     private func recoverOrphanedSessions() {
-        let now = Date()
+        // 取心跳时间戳作为估算的结束时间；若无心跳则用当前时间
+        let heartbeat = UserDefaults.standard.object(forKey: Self.heartbeatKey) as? Date
+        UserDefaults.standard.removeObject(forKey: Self.heartbeatKey)
+
         let orphans = store.sessions.filter { $0.endTime == nil }
         for var session in orphans {
-            if session.snoringEvents.isEmpty {
+            let estimatedEnd = heartbeat ?? Date()
+            let duration     = estimatedEnd.timeIntervalSince(session.startTime)
+
+            if session.snoringEvents.isEmpty && duration < Self.minSessionDuration {
+                // 太短且无数据，删除
                 store.deleteSession(session)
             } else {
-                session.endTime = now
+                // 保留：用心跳时间作为结束时间
+                session.endTime = estimatedEnd
                 store.updateSession(session)
             }
         }
@@ -106,21 +120,39 @@ class SleepSessionManager: ObservableObject {
     /// 每次开启监测都新建一条 Session（按开启时间区分报告）
     private func startNewSession() {
         let session = SleepSession(id: UUID(), startTime: Date(), endTime: nil, snoringEvents: [])
-        todaySession       = session
-        snoringCount       = 0
+        todaySession        = session
+        snoringCount        = 0
         totalSnoringSeconds = 0
-        liveSnoreDuration  = 0
-        currentEventID     = nil
-        currentEventStart  = nil
+        liveSnoreDuration   = 0
+        currentEventID      = nil
+        currentEventStart   = nil
         store.addSession(session)
+        startHeartbeat()
     }
 
     /// 停止监测时，将结束时间写入当前 Session
     private func closeCurrentSession() {
+        stopHeartbeat()
         guard var session = todaySession else { return }
         session.endTime = Date()
         todaySession    = session
         store.updateSession(session)
+    }
+
+    // MARK: - 心跳（每 60s 写入最后活跃时间，App 被强杀后用于估算结束时间）
+
+    private func startHeartbeat() {
+        UserDefaults.standard.set(Date(), forKey: Self.heartbeatKey)
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            guard self != nil else { return }
+            UserDefaults.standard.set(Date(), forKey: Self.heartbeatKey)
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        UserDefaults.standard.removeObject(forKey: Self.heartbeatKey)
     }
 
     // MARK: - Snoring Events
@@ -167,6 +199,7 @@ class SleepSessionManager: ObservableObject {
 
     func clearAllData() {
         liveTimer?.invalidate(); liveTimer = nil
+        stopHeartbeat()
         store.sessions.forEach { store.deleteSession($0) }
         todaySession        = nil
         snoringCount        = 0
