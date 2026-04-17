@@ -54,7 +54,7 @@ SnoreTracker/
 ### Performance Optimizations (AudioMonitorService.swift)
 - **SnoringDetector**: all FFT buffers pre-allocated in `init()` (zero per-frame malloc); Hann window pre-computed once; bin indices pre-computed
 - **Sample rate**: requests `preferredSampleRate(16000)` — 64% less DSP data vs 44100 Hz
-- **Buffer size**: `bufferSize: 1024` + `preferredIOBufferDuration(0.05)` → ~20 callbacks/sec; level ring feels responsive
+- **Buffer size**: `bufferSize: 2048` + `preferredIOBufferDuration(0.1)` → ~10 callbacks/sec; UI 流畅且后台不被 iOS 杀进程
 - **FFT size**: 4096 — stride-based downsampling covers full buffer regardless of size (`stride = max(1, n / fftSize)`)
 - **RMS computed once** per frame, passed into `score()` — no duplicate `vDSP_rmsqv` call
 - **Session mode**: `.measurement` (optimized for capture apps vs `.default`)
@@ -75,6 +75,7 @@ SnoreTracker/
 |----------|------|
 | `bufferSize` 调大到 8192 | 16kHz 下每次回调 = 512ms 音频 → UI **仅 ~2Hz** 更新，电平环极度卡顿 |
 | `preferredIOBufferDuration(0.2)` 配合大 bufferSize | 进一步降低回调率 |
+| `bufferSize 1024 + IOBufferDuration 0.05` | 20Hz 回调，后台 CPU 压力过大 → **iOS 在夜间主动杀进程，数据丢失** |
 | `fftSize` 4096 → 2048 | FFT 只分析缓冲区前 25%，呼噜大量漏检 |
 | 加入 `stableFrames` 跳过 FFT | 呼噜刚开始时正好被跳过，造成漏检 |
 
@@ -92,6 +93,7 @@ SnoreTracker/
 2. **遇到视觉卡顿，先查数据源频率，再查动画参数**。数据源慢，动画再好也是无用功。
 3. **`stableFrames` 类"跳过"优化风险极高**——边缘状态下（刚开始打呼噜）会漏检，不值得为边际省电引入。
 4. **性能优化要分离三个维度**：检测精度（fftSize）/ UI 响应（bufferSize、IOBufferDuration）/ 电量（采样率、模式），三者独立评估，不能一刀切。
+5. **后台进程存活与回调频率直接相关**：bufferSize 1024 + IOBufferDuration 0.05 = 20Hz，后台 CPU 压力过大，iOS 会在夜间杀进程。稳定值：bufferSize 2048 + IOBufferDuration 0.1 = 10Hz，UI 够流畅且不被杀。
 
 ### Scoring (SleepModels.swift)
 - **Dual metric**: takes the **worse** of snoring-time-percentage and events-per-hour
