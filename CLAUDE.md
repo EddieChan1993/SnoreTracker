@@ -94,6 +94,7 @@ SnoreTracker/
 3. **`stableFrames` 类"跳过"优化风险极高**——边缘状态下（刚开始打呼噜）会漏检，不值得为边际省电引入。
 4. **性能优化要分离三个维度**：检测精度（fftSize）/ UI 响应（bufferSize、IOBufferDuration）/ 电量（采样率、模式），三者独立评估，不能一刀切。
 5. **后台进程存活与回调频率直接相关**：bufferSize 1024 + IOBufferDuration 0.05 = 20Hz，后台 CPU 压力过大，iOS 会在夜间杀进程。稳定值：bufferSize 2048 + IOBufferDuration 0.1 = 10Hz，UI 够流畅且不被杀。
+6. **`AVAudioEngineConfigurationChange` 在正常运行中也会触发**，不能在其回调里做 restartEngine()——会重置 `lastIsLoud` 但不重置 `isSnoring`，导致状态机死锁，后续呼噜永远不再计数。每次加新观察者/通知处理前，必须先确认它的触发时机和频率，并走一遍完整状态流验证不会破坏现有逻辑。
 
 ### Scoring (SleepModels.swift)
 - **Dual metric**: takes the **worse** of snoring-time-percentage and events-per-hour
