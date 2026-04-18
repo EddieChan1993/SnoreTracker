@@ -100,10 +100,14 @@ final class SnoringDetector {
 
         let snoreE = bandSum(snoreLo, snoreHi)
         let highE  = bandSum(highLo,  highHi)
-        let totalE = bandSum(1,       highHi)
+        // Start from snoreLo instead of bin 1: exclude sub-bass (0–80 Hz) which captures
+        // HVAC/road rumble and would otherwise inflate totalE and suppress the snore score.
+        let totalE = bandSum(snoreLo, highHi)
         guard totalE > 0 else { return 0 }
 
-        return (snoreE / totalE) * max(0, 1 - (highE / totalE) * 1.5)
+        // Penalty multiplier 1.2 (was 1.5): snores with nasal/harsh harmonics extending
+        // into 1–6 kHz were being zeroed out too aggressively.
+        return (snoreE / totalE) * max(0, 1 - (highE / totalE) * 1.2)
     }
 }
 

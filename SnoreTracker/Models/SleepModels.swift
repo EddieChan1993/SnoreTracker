@@ -42,30 +42,27 @@ struct SleepSession: Codable, Identifiable {
         return Double(completed) / (duration / 3600)
     }
 
+    private func pctLevel(_ p: Double) -> Int {
+        switch p {
+        case 0..<5:   return 0
+        case 5..<15:  return 1
+        case 15..<30: return 2
+        default:      return 3
+        }
+    }
+
+    private func cphLevel(_ c: Double) -> Int {
+        switch c {
+        case 0..<5:   return 0
+        case 5..<15:  return 1
+        case 15..<30: return 2
+        default:      return 3
+        }
+    }
+
     /// 综合评分：取「时间占比」与「每小时频次」两项中较差的等级
     var snoringScore: String {
-        let pct = snoringPercentage
-        let cph = snoringEventsPerHour
-
-        // 各指标分别定级（0=优秀 … 3=较差）
-        func pctLevel(_ p: Double) -> Int {
-            switch p {
-            case 0..<5:   return 0
-            case 5..<15:  return 1
-            case 15..<30: return 2
-            default:      return 3
-            }
-        }
-        func cphLevel(_ c: Double) -> Int {
-            switch c {
-            case 0..<5:   return 0
-            case 5..<15:  return 1
-            case 15..<30: return 2
-            default:      return 3
-            }
-        }
-
-        switch max(pctLevel(pct), cphLevel(cph)) {
+        switch max(pctLevel(snoringPercentage), cphLevel(snoringEventsPerHour)) {
         case 0:  return "优秀"
         case 1:  return "良好"
         case 2:  return "一般"
@@ -74,11 +71,12 @@ struct SleepSession: Codable, Identifiable {
     }
 
     var snoringScoreColor: String {
-        switch snoringPercentage {
-        case 0..<5:   return "green"
-        case 5..<15:  return "blue"
-        case 15..<30: return "orange"
-        default:      return "red"
+        // Mirror the same dual-metric logic as snoringScore so color matches the label.
+        switch max(pctLevel(snoringPercentage), cphLevel(snoringEventsPerHour)) {
+        case 0:  return "green"
+        case 1:  return "blue"
+        case 2:  return "orange"
+        default: return "red"
         }
     }
 }
