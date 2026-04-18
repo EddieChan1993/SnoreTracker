@@ -255,6 +255,7 @@ class AudioMonitorService: ObservableObject {
                 self?.confirmTimer = nil; self?.beginSnoring()
             }
         }
+        print("[SM] onLoud — isSnoring=\(isSnoring) confirmTimer=\(confirmTimer != nil)")
     }
 
     private func onSilent() {
@@ -264,15 +265,18 @@ class AudioMonitorService: ObservableObject {
                 self?.silenceTimer = nil; self?.endSnoring()
             }
         }
+        print("[SM] onSilent — isSnoring=\(isSnoring) silenceTimer=\(silenceTimer != nil)")
     }
 
     private func beginSnoring() {
+        print("[SM] beginSnoring — isSnoring=\(isSnoring)")
         guard !isSnoring else { return }
         isSnoring = true
         if let filename = startRecording() { onSnoringStarted?(filename) }
     }
 
     private func endSnoring() {
+        print("[SM] endSnoring — isSnoring=\(isSnoring)")
         guard isSnoring else { return }
         isSnoring = false
         finishRecording()
