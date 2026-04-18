@@ -147,17 +147,6 @@ class AudioMonitorService: ObservableObject {
         if d.object(forKey: "confirmDelay")        != nil { confirmDelay        = d.double(forKey: "confirmDelay") }
         if d.object(forKey: "silenceDelay")        != nil { silenceDelay        = d.double(forKey: "silenceDelay") }
 
-        // 监听系统音频中断（来电、其他 App 抢占等）和引擎配置变更
-        NotificationCenter.default.addObserver(self,
-            selector: #selector(handleInterruption),
-            name: AVAudioSession.interruptionNotification, object: nil)
-        NotificationCenter.default.addObserver(self,
-            selector: #selector(handleEngineConfigChange),
-            name: .AVAudioEngineConfigurationChange, object: nil)
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
     }
 
     // MARK: - Permission
@@ -224,56 +213,6 @@ class AudioMonitorService: ObservableObject {
             self.isMonitoring = false; self.isSnoring = false; self.currentLevel = 0
         }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
-
-    // MARK: - 音频中断恢复
-
-    /// 系统中断（来电、闹钟、其他 App 抢占音频）结束后自动重启引擎
-    @objc private func handleInterruption(_ n: Notification) {
-        guard let info = n.userInfo,
-              let typeVal = info[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeVal),
-              isMonitoring else { return }
-
-        if type == .ended {
-            // 中断结束：重激活 Session 并重启引擎
-            let opts = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let shouldResume = AVAudioSession.InterruptionOptions(rawValue: opts).contains(.shouldResume)
-            guard shouldResume else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.restartEngine()
-            }
-        }
-    }
-
-    /// 耳机插拔、蓝牙切换等硬件配置变更后重启引擎
-    @objc private func handleEngineConfigChange(_ n: Notification) {
-        guard isMonitoring else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.restartEngine()
-        }
-    }
-
-    private func restartEngine() {
-        guard isMonitoring else { return }
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.stop()
-
-        audioEngine = AVAudioEngine()
-        let input  = audioEngine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        detector   = SnoringDetector(sampleRate: Float(format.sampleRate))
-        lastIsLoud = false; frameCount = 0; smoothLevel = 0
-
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buf, _ in
-            self?.process(buffer: buf)
-        }
-        do {
-            try AVAudioSession.sharedInstance().setActive(true)
-            try audioEngine.start()
-        } catch {
-            onError?("引擎重启失败: \(error.localizedDescription)")
-        }
     }
 
     // MARK: - Audio Processing（audio 线程）
