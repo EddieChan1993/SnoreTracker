@@ -106,8 +106,7 @@ SnoreTracker/
 | `bufferSize 1024 + IOBufferDuration 0.05` | 20Hz 回调，后台 CPU 压力过大 → **iOS 在夜间主动杀进程，数据丢失** |
 | `fftSize` 4096 → 2048 | FFT 只分析缓冲区前 25%，呼噜大量漏检 |
 | 加入 `stableFrames` 跳过 FFT | 呼噜刚开始时正好被跳过，造成漏检 |
-| session mode `.default` → `.measurement` | 关闭系统 AGC，录音回放声音极小（用户完全听不见自己的鼾声） |
-| session mode `.measurement` → `.default`（为修录音音量）| .default 开启 AGC，静默时系统拉高环境噪音增益，RMS 始终偏高，`onSilent()` 永远不触发，停鼾检测完全失效 |
+| session mode `.default` → `.measurement` | 关闭 AGC，录音极小声；改回 `.default` 又导致停鼾检测失效——详见踩坑记录 §3 |
 
 **电平环卡顿排查走了 5 次弯路：**
 
@@ -125,6 +124,31 @@ SnoreTracker/
 4. **性能优化要分离三个维度**：检测精度（fftSize）/ UI 响应（bufferSize、IOBufferDuration）/ 电量（采样率、模式），三者独立评估，不能一刀切。
 5. **后台进程存活与回调频率直接相关**：稳定值是 bufferSize 2048 + IOBufferDuration 0.1 = 10Hz，再快会被杀进程，再慢电平环卡顿。
 6. **`AVAudioEngineConfigurationChange` 在正常运行中也会触发**，不能在其回调里做 `restartEngine()`——会重置 `lastIsLoud` 但不重置 `isSnoring`，导致状态机死锁，后续呼噜永远不再计数。每次加新通知处理前，必须先确认触发时机并走一遍完整状态流。
+
+---
+
+### 3. AVAudioSession mode 与录音音量的对立问题
+
+> 一个旋钮影响两件事，来回改了 5 次，每次修一个问题就破坏另一个。
+
+**背景**：`97ecba4`（性能优化）把 session mode 从 `.default` 改为 `.measurement`，此后录音回放极小声。
+
+**错误的修法（来回反复）：**
+
+| 操作 | 结果 |
+|------|------|
+| `.measurement` → `.default`（想修录音音量） | AGC 开启，静默时系统拉高环境噪音增益，RMS 持续偏高，`onSilent()` 永远不触发，**停鼾检测完全失效** |
+| `.default` → `.measurement`（想修停鼾检测） | 录音极小声问题复现 |
+| 写文件前 ×8 放大，恢复 `.measurement` | 音量仍几乎听不见（8 倍不够） |
+| 增益改为 20x → 15x → 12x | 12x 效果合适 |
+
+**根本原因**：`.measurement` 和 `.default` 是一个旋钮控制两件独立的事，单独动它必然顾此失彼。
+
+**正确架构（两个需求分开解决，互不干扰）**：
+- **检测**：必须用 `.measurement`，关闭 AGC，静默时 RMS 真实归零，状态机才能正确触发 `onSilent()`
+- **录音回放音量**：`writeAmplified()` 在写文件前用 `vDSP_vsmul` 放大 12 倍 + `vDSP_vclip` 限幅，与 session mode 无关
+
+> **规则**：**禁止为修录音音量将 session mode 改回 `.default`**。两个需求已经分离，mode 只管检测，音量只管 `writeAmplified()`。如果觉得音量还是小，调 `gain` 常量，不要动 mode。
 
 ---
 
