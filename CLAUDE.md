@@ -46,10 +46,11 @@ SnoreTracker/
 
 ### Snoring Detection (AudioMonitorService.swift)
 - **Algorithm**: RMS gate → 4096-pt FFT (Accelerate/vDSP) → band energy ratio
-- **Snoring band**: 80–500 Hz; **High-freq band**: 1000–6000 Hz
-- **Score formula**: `snoreRatio * max(0, 1 - highRatio * 1.2)`
-  - `snoreRatio = snoreE / totalE`；`totalE` 从 `snoreLo`（80 Hz）开始，**不包含** 0–80 Hz 次低频
-  - 奖励低频主导，惩罚语音/口哨；惩罚系数 1.2（>83% 高频才归零）
+- **Snoring band**: 80–800 Hz；`totalE` 范围 80–6000 Hz（`highHi` 作为上界，`highLo` 已删除）
+- **Score formula**: `snoreE / totalE`（纯比值，**无高频惩罚项**）
+  - `totalE` 从 `snoreLo`（80 Hz）开始，**不包含** 0–80 Hz 次低频
+  - 高频惩罚项已彻底移除——打鼾泛音天然延伸至 1 kHz+，惩罚项会系统性压低真实打鼾得分
+- **默认阈值**：`minimumRMS = 0.003`，`snoreScoreThreshold = 0.12`（手机放床头 1–2 m 远仍能检测）
 - **State machine**: `onLoud()` → `confirmTimer` → `beginSnoring()`；`onSilent()` → `silenceTimer` → `endSnoring()`
 - Settings restored from `UserDefaults` in `init()`: `minimumRMS`, `snoreScoreThreshold`, `confirmDelay`, `silenceDelay`
 
@@ -135,14 +136,14 @@ SnoreTracker/
 
 > **规则**：totalE 的起点必须与 snoreLo 对齐，分母不能包含检测频段之外的噪声能量。
 
-#### Bug B — 高频惩罚系数 1.5 过于激进（漏报鼻腔/粗哑型呼噜）
+#### Bug B — 高频惩罚项系统性压低打鼾得分（严重漏报）
 **文件**: `AudioMonitorService.swift` `score()` 函数
 
-原公式 `1 - (highE / totalE) * 1.5`：高频占比 > 67% 得分直接归零。鼻腔共鸣或粗哑型呼噜在 1–6 kHz 有泛音，被误判为非呼噜。
+原公式带高频惩罚项 `* max(0, 1 - highRatio * N)`。问题根源：**打鼾本身的泛音天然延伸到 1 kHz 以上**，惩罚项把真实打鼾的得分也一并压低。即使系数从 1.5 → 1.2 → 0.8 逐步放宽，仍然导致检测不灵敏——排查了很长时间。
 
-修复：系数改为 1.2（阈值提升至 83%）。
+最终修复：**彻底删除惩罚项**，score = `snoreE / totalE`（纯低频比值）。
 
-> **规则**：调整惩罚系数时同步更新此文档的"Score formula"一行，以及 SettingsView 的说明文字（如有）。
+> **规则**：**禁止重新引入高频惩罚项**。打鼾和语音/环境音的区分靠 `minimumRMS` 门控 + 频率比值阈值，而不是惩罚高频。惩罚项在任何系数下都会漏报泛音丰富的打鼾。
 
 #### Bug C — `snoringScoreColor` 与 `snoringScore` 逻辑不一致（UI 误导）
 **文件**: `SleepModels.swift`
@@ -181,7 +182,8 @@ Select your device → Cmd+R.
 rm -rf SnoreTracker.xcodeproj/xcshareddata && xcodegen generate
 ```
 
-**Bundle ID**: `com.eddiechan.snoretracker.dev` (Personal Team, 7-day provisioning)
+**Bundle ID**: `com.eddiechan.snoretracker.ec2024` (Personal Team, 7-day provisioning)
+- `com.eddiechan.snoretracker` 和 `com.eddiechan.snoretracker.dev` 均已被他人占用，无法注册
 
 ## Common Pitfalls
 - `Color(hex:)` is defined in `HomeView.swift` — available globally across the module

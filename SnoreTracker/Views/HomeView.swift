@@ -191,7 +191,7 @@ struct HomeView: View {
 
                 // 动态弧
                 Circle()
-                    .trim(from: 0, to: CGFloat(min(sessionManager.currentLevel * 6, 1)))
+                    .trim(from: 0, to: CGFloat(min(sessionManager.currentLevel * 15, 1)))
                     .stroke(
                         sessionManager.isSnoring
                             ? LinearGradient(colors: [theme.snoringAccent, theme.snoringAccent.opacity(0.6)],

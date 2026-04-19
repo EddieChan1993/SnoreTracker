@@ -18,9 +18,9 @@ final class SnoringDetector {
     private var mags:    [Float]
 
     // 预计算频段 bin（采样率固定后不变）
+    // snore band 扩展至 800 Hz：打鼾泛音可延伸至 600–800 Hz，500 Hz 上限会漏掉这部分能量
     private let snoreLo: Int
     private let snoreHi: Int
-    private let highLo:  Int
     private let highHi:  Int
 
     init(sampleRate: Float) {
@@ -41,8 +41,7 @@ final class SnoringDetector {
         // 若仍为 44100 Hz，bin 宽 = 44100/4096 ≈ 10.8 Hz（同原始设计）
         let binW = sampleRate / Float(size)
         snoreLo  = max(1,    Int(80   / binW))
-        snoreHi  = min(half, Int(500  / binW))
-        highLo   = min(half, Int(1000 / binW))
+        snoreHi  = min(half, Int(800  / binW))
         highHi   = min(half, Int(6000 / binW))
     }
 
@@ -99,15 +98,14 @@ final class SnoringDetector {
         }
 
         let snoreE = bandSum(snoreLo, snoreHi)
-        let highE  = bandSum(highLo,  highHi)
         // Start from snoreLo instead of bin 1: exclude sub-bass (0–80 Hz) which captures
         // HVAC/road rumble and would otherwise inflate totalE and suppress the snore score.
         let totalE = bandSum(snoreLo, highHi)
         guard totalE > 0 else { return 0 }
 
-        // Penalty multiplier 1.2 (was 1.5): snores with nasal/harsh harmonics extending
-        // into 1–6 kHz were being zeroed out too aggressively.
-        return (snoreE / totalE) * max(0, 1 - (highE / totalE) * 1.2)
+        // 去掉高频惩罚：打鼾本身泛音延伸至 1 kHz+，惩罚项会系统性压低真实打鼾得分
+        // 用纯比值：80–800 Hz 能量占 80–6000 Hz 总能量的比例
+        return snoreE / totalE
     }
 }
 
@@ -124,8 +122,8 @@ class AudioMonitorService: ObservableObject {
     var onSnoringStopped: (() -> Void)?
     var onError:          ((String) -> Void)?
 
-    var minimumRMS:          Float        = 0.02
-    var snoreScoreThreshold: Float        = 0.40
+    var minimumRMS:          Float        = 0.003
+    var snoreScoreThreshold: Float        = 0.12
     var confirmDelay:        TimeInterval = 1.0
     var silenceDelay:        TimeInterval = 5.0
 
@@ -140,7 +138,6 @@ class AudioMonitorService: ObservableObject {
 
     // audio 线程私有
     private var lastIsLoud:  Bool  = false
-    private var frameCount:  UInt8 = 0
     private var smoothLevel: Float = 0
 
     // MARK: - Init
@@ -189,7 +186,6 @@ class AudioMonitorService: ObservableObject {
         let format  = input.outputFormat(forBus: 0)
         detector    = SnoringDetector(sampleRate: Float(format.sampleRate))
         lastIsLoud  = false
-        frameCount  = 0
         smoothLevel = 0
 
         // bufferSize 2048：~100ms/次（16kHz），与 preferredIOBufferDuration 匹配
@@ -242,7 +238,6 @@ class AudioMonitorService: ObservableObject {
         smoothLevel = rms > smoothLevel ? rms : 0.2 * rms + 0.8 * smoothLevel
         let level   = smoothLevel
 
-        frameCount &+= 1
         DispatchQueue.main.async { [weak self, isLoud, changed, level] in
             guard let self else { return }
             self.currentLevel = level
