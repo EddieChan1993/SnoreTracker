@@ -137,9 +137,8 @@ class AudioMonitorService: ObservableObject {
     private let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
     // audio 线程私有
-    private var lastIsLoud:   Bool  = false
-    private var smoothLevel:  Float = 0
-    private var recordBuffer: AVAudioPCMBuffer?   // 预分配，录音增益放大用
+    private var lastIsLoud:  Bool  = false
+    private var smoothLevel: Float = 0
 
     // MARK: - Init
     init() {
@@ -169,8 +168,9 @@ class AudioMonitorService: ObservableObject {
         guard permissionGranted, !isMonitoring else { return }
         do {
             let s = AVAudioSession.sharedInstance()
-            // .measurement 模式：专为音频测量设计，比 .default 更省电
-            try s.setCategory(.playAndRecord, mode: .measurement,
+            // .default 模式保留系统 AGC，录音音量正常；
+            // .measurement 会关闭 AGC 导致录音极小声（97ecba4 改坏的）
+            try s.setCategory(.playAndRecord, mode: .default,
                               options: [.allowBluetoothHFP, .mixWithOthers])
             // 请求 16000 Hz：呼噜检测关注 80–6000 Hz，16000 Hz Nyquist 足够
             // 若硬件不支持则系统自动回退，不影响检测正确性
@@ -190,9 +190,6 @@ class AudioMonitorService: ObservableObject {
         smoothLevel = 0
 
         // bufferSize 2048：~100ms/次（16kHz），与 preferredIOBufferDuration 匹配
-        // 预分配录音增益缓冲区，容量与 tap bufferSize 一致，避免每帧 malloc
-        recordBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2048)
-
         // score() 内部用等间隔采样覆盖完整缓冲区，大小变化不影响检测精度
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buf, _ in
             self?.process(buffer: buf)
@@ -223,7 +220,7 @@ class AudioMonitorService: ObservableObject {
 
     private func process(buffer: AVAudioPCMBuffer) {
         if isRecording, let file = recordingFile {
-            writeAmplified(buffer: buffer, to: file)
+            try? file.write(from: buffer)
         }
 
         // RMS 计算一次，同时用于 FFT 门控和 UI 平滑
@@ -304,22 +301,5 @@ class AudioMonitorService: ObservableObject {
 
     private func finishRecording() {
         isRecording = false; recordingFile = nil
-    }
-
-    /// .measurement 模式关闭了系统 AGC，原始麦克风信号很弱，直接录音回放声音极小。
-    /// 写文件前对 PCM 放大 8 倍，clip 到 [-1, 1] 防止失真，检测路径不受影响。
-    private func writeAmplified(buffer: AVAudioPCMBuffer, to file: AVAudioFile) {
-        guard let src = buffer.floatChannelData?[0],
-              let rec = recordBuffer,
-              let dst = rec.floatChannelData?[0] else {
-            try? file.write(from: buffer); return
-        }
-        let n = vDSP_Length(buffer.frameLength)
-        rec.frameLength = buffer.frameLength
-        var gain: Float = 8.0
-        vDSP_vsmul(src, 1, &gain, dst, 1, n)
-        var lo: Float = -1.0, hi: Float = 1.0
-        vDSP_vclip(dst, 1, &lo, &hi, dst, 1, n)
-        try? file.write(from: rec)
     }
 }

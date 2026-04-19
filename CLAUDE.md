@@ -105,6 +105,7 @@ SnoreTracker/
 | `bufferSize 1024 + IOBufferDuration 0.05` | 20Hz 回调，后台 CPU 压力过大 → **iOS 在夜间主动杀进程，数据丢失** |
 | `fftSize` 4096 → 2048 | FFT 只分析缓冲区前 25%，呼噜大量漏检 |
 | 加入 `stableFrames` 跳过 FFT | 呼噜刚开始时正好被跳过，造成漏检 |
+| session mode `.default` → `.measurement` | 关闭系统 AGC，录音回放声音极小（用户完全听不见自己的鼾声） |
 
 **电平环卡顿排查走了 5 次弯路：**
 
