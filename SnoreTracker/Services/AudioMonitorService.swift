@@ -315,7 +315,7 @@ class AudioMonitorService: ObservableObject {
         }
         let n = vDSP_Length(buffer.frameLength)
         rec.frameLength = buffer.frameLength
-        var gain: Float = 20.0
+        var gain: Float = 15.0
         vDSP_vsmul(src, 1, &gain, dst, 1, n)
         var lo: Float = -1.0, hi: Float = 1.0
         vDSP_vclip(dst, 1, &lo, &hi, dst, 1, n)
