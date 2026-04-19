@@ -11,8 +11,16 @@ struct SnoreTrackerApp: App {
         let s = SleepStore()
         _store          = StateObject(wrappedValue: s)
         _sessionManager = StateObject(wrappedValue: SleepSessionManager(store: s))
-        // 防止打开/关闭 app 时出现白色过渡帧（UIWindow 默认背景为白色）
-        UIWindow.appearance().backgroundColor = UIColor(red: 0.039, green: 0.059, blue: 0.118, alpha: 1)
+
+        // 在首次渲染前设好深色背景，防止启动/关闭动画出现白色角落
+        let savedID = UserDefaults.standard.string(forKey: "selectedThemeID") ?? "dark"
+        let theme   = AppTheme.all.first { $0.id == savedID } ?? .dark
+        UIWindow.appearance().backgroundColor = theme.tabBarBackground
+        let tabBar = UITabBarAppearance()
+        tabBar.configureWithOpaqueBackground()
+        tabBar.backgroundColor = theme.tabBarBackground
+        UITabBar.appearance().standardAppearance   = tabBar
+        UITabBar.appearance().scrollEdgeAppearance = tabBar
     }
 
     var body: some Scene {
