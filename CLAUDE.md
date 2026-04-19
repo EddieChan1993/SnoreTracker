@@ -75,6 +75,7 @@ SnoreTracker/
 
 ### Performance Optimizations (AudioMonitorService.swift)
 - **SnoringDetector**: all FFT buffers pre-allocated in `init()` (zero per-frame malloc); Hann window pre-computed once; bin indices pre-computed
+- **Session mode**: 必须用 `.measurement`（关闭 AGC）。`.default` 的 AGC 会在静默时拉高环境噪音，导致停鼾检测失效。录音音量小的问题由 `writeAmplified()` 解决（写文件前 ×8 放大），两个需求分开处理，**不能**为了录音音量改回 `.default`。
 - **Sample rate**: requests `preferredSampleRate(16000)` — 64% less DSP data vs 44100 Hz
 - **Buffer size**: `bufferSize: 2048` + `preferredIOBufferDuration(0.1)` → ~10 callbacks/sec; UI 流畅且后台不被 iOS 杀进程
 - **FFT size**: 4096 — stride-based downsampling covers full buffer regardless of size (`stride = max(1, n / fftSize)`)
@@ -106,6 +107,7 @@ SnoreTracker/
 | `fftSize` 4096 → 2048 | FFT 只分析缓冲区前 25%，呼噜大量漏检 |
 | 加入 `stableFrames` 跳过 FFT | 呼噜刚开始时正好被跳过，造成漏检 |
 | session mode `.default` → `.measurement` | 关闭系统 AGC，录音回放声音极小（用户完全听不见自己的鼾声） |
+| session mode `.measurement` → `.default`（为修录音音量）| .default 开启 AGC，静默时系统拉高环境噪音增益，RMS 始终偏高，`onSilent()` 永远不触发，停鼾检测完全失效 |
 
 **电平环卡顿排查走了 5 次弯路：**
 

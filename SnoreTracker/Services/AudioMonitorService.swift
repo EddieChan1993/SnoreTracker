@@ -137,8 +137,9 @@ class AudioMonitorService: ObservableObject {
     private let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
     // audio 线程私有
-    private var lastIsLoud:  Bool  = false
-    private var smoothLevel: Float = 0
+    private var lastIsLoud:   Bool  = false
+    private var smoothLevel:  Float = 0
+    private var recordBuffer: AVAudioPCMBuffer?
 
     // MARK: - Init
     init() {
@@ -168,9 +169,10 @@ class AudioMonitorService: ObservableObject {
         guard permissionGranted, !isMonitoring else { return }
         do {
             let s = AVAudioSession.sharedInstance()
-            // .default 模式保留系统 AGC，录音音量正常；
-            // .measurement 会关闭 AGC 导致录音极小声（97ecba4 改坏的）
-            try s.setCategory(.playAndRecord, mode: .default,
+            // .measurement 关闭 AGC：静默时 RMS 真的降到 0，onSilent() 能正确触发。
+            // .default 开启 AGC：静默时系统拉高环境噪音增益，RMS 始终偏高，停鼾检测失效。
+            // 录音音量小的问题由 writeAmplified() 在写文件时放大解决，不依赖 AGC。
+            try s.setCategory(.playAndRecord, mode: .measurement,
                               options: [.allowBluetoothHFP, .mixWithOthers])
             // 请求 16000 Hz：呼噜检测关注 80–6000 Hz，16000 Hz Nyquist 足够
             // 若硬件不支持则系统自动回退，不影响检测正确性
@@ -185,9 +187,10 @@ class AudioMonitorService: ObservableObject {
         audioEngine = AVAudioEngine()
         let input   = audioEngine.inputNode
         let format  = input.outputFormat(forBus: 0)
-        detector    = SnoringDetector(sampleRate: Float(format.sampleRate))
-        lastIsLoud  = false
-        smoothLevel = 0
+        detector     = SnoringDetector(sampleRate: Float(format.sampleRate))
+        lastIsLoud   = false
+        smoothLevel  = 0
+        recordBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 2048)
 
         // bufferSize 2048：~100ms/次（16kHz），与 preferredIOBufferDuration 匹配
         // score() 内部用等间隔采样覆盖完整缓冲区，大小变化不影响检测精度
@@ -220,7 +223,7 @@ class AudioMonitorService: ObservableObject {
 
     private func process(buffer: AVAudioPCMBuffer) {
         if isRecording, let file = recordingFile {
-            try? file.write(from: buffer)
+            writeAmplified(buffer: buffer, to: file)
         }
 
         // RMS 计算一次，同时用于 FFT 门控和 UI 平滑
@@ -301,5 +304,21 @@ class AudioMonitorService: ObservableObject {
 
     private func finishRecording() {
         isRecording = false; recordingFile = nil
+    }
+
+    // .measurement 模式无 AGC，原始信号弱，写文件前放大供回放使用；检测路径不受影响
+    private func writeAmplified(buffer: AVAudioPCMBuffer, to file: AVAudioFile) {
+        guard let src = buffer.floatChannelData?[0],
+              let rec = recordBuffer,
+              let dst = rec.floatChannelData?[0] else {
+            try? file.write(from: buffer); return
+        }
+        let n = vDSP_Length(buffer.frameLength)
+        rec.frameLength = buffer.frameLength
+        var gain: Float = 8.0
+        vDSP_vsmul(src, 1, &gain, dst, 1, n)
+        var lo: Float = -1.0, hi: Float = 1.0
+        vDSP_vclip(dst, 1, &lo, &hi, dst, 1, n)
+        try? file.write(from: rec)
     }
 }
