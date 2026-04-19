@@ -1,6 +1,21 @@
 import SwiftUI
 import UIKit
 
+/// 通过 UIViewRepresentable 拿到真实 UIWindow 实例并设置背景色。
+/// UIWindow.appearance() 只影响新建窗口，对 SwiftUI 已创建的主窗口无效。
+private struct WindowBackgroundSetter: UIViewRepresentable {
+    let color: UIColor
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.backgroundColor = .clear
+        DispatchQueue.main.async { v.window?.backgroundColor = self.color }
+        return v
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {
+        DispatchQueue.main.async { uiView.window?.backgroundColor = self.color }
+    }
+}
+
 @main
 struct SnoreTrackerApp: App {
     @StateObject private var store: SleepStore
@@ -30,6 +45,7 @@ struct SnoreTrackerApp: App {
                 .environmentObject(sessionManager)
                 .environmentObject(themeManager)
                 .preferredColorScheme(.dark)
+                .background(WindowBackgroundSetter(color: themeManager.current.tabBarBackground))
         }
     }
 }
