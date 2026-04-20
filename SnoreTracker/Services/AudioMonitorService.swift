@@ -285,21 +285,15 @@ class AudioMonitorService: ObservableObject {
 
     @discardableResult
     private func startRecording() -> String? {
-        // .wav（PCM）直接写入，无 AAC 编码器 priming delay，录音开头不会卡顿
-        let filename = "snore_\(Int(Date().timeIntervalSince1970)).wav"
+        // 用引擎原始格式（Float32 PCM）直接写入 .caf，零格式转换，开头无咔哒声
+        // .caf 是 Apple 原生容器，完美支持任意 PCM 格式，iOS 播放无兼容问题
+        let filename = "snore_\(Int(Date().timeIntervalSince1970)).caf"
         let url = docsURL.appendingPathComponent(filename)
         let fmt = audioEngine.inputNode.outputFormat(forBus: 0)
-        let settings: [String: Any] = [
-            AVFormatIDKey:              kAudioFormatLinearPCM,
-            AVSampleRateKey:            fmt.sampleRate,
-            AVNumberOfChannelsKey:      1,
-            AVLinearPCMBitDepthKey:     16,
-            AVLinearPCMIsFloatKey:      false,
-            AVLinearPCMIsBigEndianKey:  false,
-            AVLinearPCMIsNonInterleaved: false
-        ]
         do {
-            recordingFile = try AVAudioFile(forWriting: url, settings: settings)
+            recordingFile = try AVAudioFile(forWriting: url, settings: fmt.settings,
+                                            commonFormat: fmt.commonFormat,
+                                            interleaved: fmt.isInterleaved)
             isRecording = true
             return filename
         } catch { print("录音启动失败: \(error)"); return nil }
