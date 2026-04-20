@@ -180,6 +180,8 @@ class AudioMonitorService: ObservableObject {
             // 100ms IO 缓冲：~10 次/秒唤醒，UI 流畅且后台 CPU 压力低
             try s.setPreferredIOBufferDuration(0.1)
             try s.setActive(true)
+            // 硬件麦克风增益拉满（不是所有设备都支持，不支持时静默跳过）
+            if s.isInputGainSettable { try? s.setInputGain(1.0) }
         } catch {
             onError?("音频会话失败: \(error.localizedDescription)"); return
         }
@@ -315,7 +317,7 @@ class AudioMonitorService: ObservableObject {
         }
         let n = vDSP_Length(buffer.frameLength)
         rec.frameLength = buffer.frameLength
-        var gain: Float = 12.0
+        var gain: Float = 20.0
         vDSP_vsmul(src, 1, &gain, dst, 1, n)
         var lo: Float = -1.0, hi: Float = 1.0
         vDSP_vclip(dst, 1, &lo, &hi, dst, 1, n)
