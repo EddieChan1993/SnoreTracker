@@ -75,7 +75,7 @@ SnoreTracker/
 
 ### Performance Optimizations (AudioMonitorService.swift)
 - **SnoringDetector**: all FFT buffers pre-allocated in `init()` (zero per-frame malloc); Hann window pre-computed once; bin indices pre-computed
-- **Session mode**: 必须用 `.measurement`（关闭 AGC）。`.default` 的 AGC 会在静默时拉高环境噪音，导致停鼾检测失效。录音音量小的问题由 `writeAmplified()` 解决（写文件前 ×8 放大），两个需求分开处理，**不能**为了录音音量改回 `.default`。
+- **Session mode**: 必须用 `.default`（保留 AGC）。阈值在 AGC 环境下校准（`minimumRMS=0.015`），静默时噪底被 gate 过滤，录音音量也正常。**禁止改成 `.measurement`**——详见踩坑记录 §3。
 - **Sample rate**: requests `preferredSampleRate(16000)` — 64% less DSP data vs 44100 Hz
 - **Buffer size**: `bufferSize: 2048` + `preferredIOBufferDuration(0.1)` → ~10 callbacks/sec; UI 流畅且后台不被 iOS 杀进程
 - **FFT size**: 4096 — stride-based downsampling covers full buffer regardless of size (`stride = max(1, n / fftSize)`)
@@ -144,11 +144,12 @@ SnoreTracker/
 
 **根本原因**：`.measurement` 和 `.default` 是一个旋钮控制两件独立的事，单独动它必然顾此失彼。
 
-**正确架构（两个需求分开解决，互不干扰）**：
-- **检测**：必须用 `.measurement`，关闭 AGC，静默时 RMS 真实归零，状态机才能正确触发 `onSilent()`
-- **录音回放音量**：`writeAmplified()` 在写文件前用 `vDSP_vsmul` 放大 12 倍 + `vDSP_vclip` 限幅，与 session mode 无关
+**最终正确架构**：
+- session mode 用 **`.default`**，保留 AGC，录音音量正常
+- `minimumRMS = 0.015`，`snoreScoreThreshold = 0.25`——这是在 AGC 环境下既能过滤噪底、又能检测到打鼾的校准值
+- **不需要** `writeAmplified()`，不需要软件放大
 
-> **规则**：**禁止为修录音音量将 session mode 改回 `.default`**。两个需求已经分离，mode 只管检测，音量只管 `writeAmplified()`。如果觉得音量还是小，调 `gain` 常量，不要动 mode。
+> **规则**：**mode 锁定 `.default`，不要改成 `.measurement`**。`.measurement` 关闭 AGC 后原始信号极弱，需要极低阈值才能触发，而极低阈值在 `.default` 模式下又会被 AGC 噪底误触发——两头都错，软件放大也补不回来。阈值要在 `.default`+AGC 环境下校准，不是 `.measurement` 环境。
 
 ---
 
