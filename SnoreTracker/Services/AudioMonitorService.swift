@@ -285,13 +285,21 @@ class AudioMonitorService: ObservableObject {
 
     @discardableResult
     private func startRecording() -> String? {
-        let filename = "snore_\(Int(Date().timeIntervalSince1970)).m4a"
+        // .wav（PCM）直接写入，无 AAC 编码器 priming delay，录音开头不会卡顿
+        let filename = "snore_\(Int(Date().timeIntervalSince1970)).wav"
         let url = docsURL.appendingPathComponent(filename)
         let fmt = audioEngine.inputNode.outputFormat(forBus: 0)
+        let settings: [String: Any] = [
+            AVFormatIDKey:              kAudioFormatLinearPCM,
+            AVSampleRateKey:            fmt.sampleRate,
+            AVNumberOfChannelsKey:      1,
+            AVLinearPCMBitDepthKey:     16,
+            AVLinearPCMIsFloatKey:      false,
+            AVLinearPCMIsBigEndianKey:  false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
         do {
-            recordingFile = try AVAudioFile(forWriting: url, settings: fmt.settings,
-                                            commonFormat: fmt.commonFormat,
-                                            interleaved: fmt.isInterleaved)
+            recordingFile = try AVAudioFile(forWriting: url, settings: settings)
             isRecording = true
             return filename
         } catch { print("录音启动失败: \(error)"); return nil }
