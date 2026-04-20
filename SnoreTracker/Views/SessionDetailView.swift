@@ -444,6 +444,7 @@ struct SnoringEventRow: View {
         try? AVAudioSession.sharedInstance().setCategory(.playback)
         try? AVAudioSession.sharedInstance().setActive(true)
         player = try? AVAudioPlayer(contentsOf: url)
+        player?.prepareToPlay()
         player?.play(); isPlaying = true
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             guard let p = player else { return }
