@@ -143,10 +143,13 @@ class SleepSessionManager: ObservableObject {
 
     private func startHeartbeat() {
         UserDefaults.standard.set(Date(), forKey: Self.heartbeatKey)
-        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             guard self != nil else { return }
             UserDefaults.standard.set(Date(), forKey: Self.heartbeatKey)
         }
+        // .common mode：锁屏、滑动等 UI 忙碌时 timer 仍然触发
+        RunLoop.main.add(t, forMode: .common)
+        heartbeatTimer = t
     }
 
     private func stopHeartbeat() {
@@ -170,10 +173,12 @@ class SleepSessionManager: ObservableObject {
         store.updateSession(session)
 
         liveSnoreDuration = 0
-        liveTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        let lt = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             guard let self, let start = self.currentEventStart else { return }
             self.liveSnoreDuration = Date().timeIntervalSince(start)
         }
+        RunLoop.main.add(lt, forMode: .common)
+        liveTimer = lt
     }
 
     private func handleSnoringStopped() {

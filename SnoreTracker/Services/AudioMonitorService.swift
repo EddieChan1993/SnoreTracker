@@ -1,6 +1,7 @@
 import AVFoundation
 import Accelerate
 import Combine
+import UIKit
 
 // MARK: - SnoringDetector
 
@@ -17,8 +18,6 @@ final class SnoringDetector {
     private var imagp:   [Float]
     private var mags:    [Float]
 
-    // 预计算频段 bin（采样率固定后不变）
-    // snore band 扩展至 800 Hz：打鼾泛音可延伸至 600–800 Hz，500 Hz 上限会漏掉这部分能量
     private let snoreLo: Int
     private let snoreHi: Int
     private let highHi:  Int
@@ -37,8 +36,6 @@ final class SnoringDetector {
 
         vDSP_hann_window(&window, vDSP_Length(size), Int32(vDSP_HANN_NORM))
 
-        // 若采样率被降至 16000 Hz，bin 宽 = 16000/4096 ≈ 3.9 Hz（分辨率更高）
-        // 若仍为 44100 Hz，bin 宽 = 44100/4096 ≈ 10.8 Hz（同原始设计）
         let binW = sampleRate / Float(size)
         snoreLo  = max(1,    Int(80   / binW))
         snoreHi  = min(half, Int(800  / binW))
@@ -47,9 +44,6 @@ final class SnoringDetector {
 
     deinit { if let s = fftSetup { vDSP_destroy_fftsetup(s) } }
 
-    /// 呼噜得分（0~1）。
-    /// - 接受预算好的 rms，避免重复计算
-    /// - 用等间隔采样覆盖完整缓冲区，避免大 buffer 时只分析前段
     func score(buffer: AVAudioPCMBuffer, rms: Float, minimumRMS: Float) -> Float {
         guard rms >= minimumRMS,
               let setup = fftSetup,
@@ -58,11 +52,8 @@ final class SnoringDetector {
         let n = Int(buffer.frameLength)
         guard n > 0 else { return 0 }
 
-        // 等间隔采样：stride > 1 时覆盖完整缓冲区
-        // 例如 buffer=8192, fftSize=4096 → stride=2, 覆盖全部样本（等效 22050 Hz）
-        // 例如 buffer=4096, fftSize=4096 → stride=1, 直接使用（44100 Hz）
-        let stride   = max(1, n / fftSize)
-        let copyLen  = min(n / stride, fftSize)
+        let stride  = max(1, n / fftSize)
+        let copyLen = min(n / stride, fftSize)
 
         samples.withUnsafeMutableBufferPointer { buf in
             for i in 0..<copyLen { buf[i] = raw[i * stride] }
@@ -98,13 +89,8 @@ final class SnoringDetector {
         }
 
         let snoreE = bandSum(snoreLo, snoreHi)
-        // Start from snoreLo instead of bin 1: exclude sub-bass (0–80 Hz) which captures
-        // HVAC/road rumble and would otherwise inflate totalE and suppress the snore score.
         let totalE = bandSum(snoreLo, highHi)
         guard totalE > 0 else { return 0 }
-
-        // 去掉高频惩罚：打鼾本身泛音延伸至 1 kHz+，惩罚项会系统性压低真实打鼾得分
-        // 用纯比值：80–800 Hz 能量占 80–6000 Hz 总能量的比例
         return snoreE / totalE
     }
 }
@@ -134,20 +120,39 @@ class AudioMonitorService: ObservableObject {
     private var confirmTimer: Timer?
     private var silenceTimer: Timer?
 
-    private let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    // ── UI 桥接：音频线程写 → displayTimer 读（6 Hz），大幅减少主线程唤醒 ────
+    // ARM64 上 Float/Bool 单次读写是原子操作，此处安全
+    private var _pendingLevel:   Float = 0
+    private var _pendingIsLoud:  Bool  = false
+    private var _pendingChanged: Bool  = false
+    private var displayTimer:    Timer?
 
-    // audio 线程私有
+    // FFT 每隔一帧做一次（~200ms/次），检测延迟远小于 confirmDelay（≥1s）
+    // 注意：不用 stableFrames 类"按状态跳过"——会在呼噜刚开始时漏检（见 CLAUDE.md §1）
+    private var bufferCount = 0
+    private let fftEvery    = 2
+
     private var lastIsLoud:  Bool  = false
     private var smoothLevel: Float = 0
 
+    private let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+
+    // ── 后台保活 ─────────────────────────────────────────────────────────────
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    private var notificationObservers: [NSObjectProtocol] = []
+
     // MARK: - Init
+
     init() {
         let d = UserDefaults.standard
         if d.object(forKey: "minimumRMS")          != nil { minimumRMS          = Float(d.double(forKey: "minimumRMS")) }
         if d.object(forKey: "snoreScoreThreshold") != nil { snoreScoreThreshold = Float(d.double(forKey: "snoreScoreThreshold")) }
         if d.object(forKey: "confirmDelay")        != nil { confirmDelay        = d.double(forKey: "confirmDelay") }
         if d.object(forKey: "silenceDelay")        != nil { silenceDelay        = d.double(forKey: "silenceDelay") }
+    }
 
+    deinit {
+        notificationObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
     // MARK: - Permission
@@ -166,85 +171,138 @@ class AudioMonitorService: ObservableObject {
 
     func startMonitoring() {
         guard permissionGranted, !isMonitoring else { return }
+        setupNotificationObservers()
+        activateAndStartEngine()
+        requestBackgroundTask()
+    }
+
+    func stopMonitoring() {
+        guard isMonitoring else { return }
+        teardown()
+        removeNotificationObservers()
+        endBackgroundTask()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        DispatchQueue.main.async {
+            self.isMonitoring = false
+            self.isSnoring    = false
+            self.currentLevel = 0
+        }
+    }
+
+    // MARK: - Engine Lifecycle
+
+    @discardableResult
+    private func activateAndStartEngine() -> Bool {
+        // session 用 .default 保留 AGC；见 CLAUDE.md §3（禁止改 .measurement）
         do {
             let s = AVAudioSession.sharedInstance()
-            // .default 模式保留 AGC，麦克风信号正常，录音回放音量正常。
-            // 用 .measurement 会关闭 AGC 导致录音极小声，且需要极低阈值才能检测，
-            // 而极低阈值在 .default 模式下又会被 AGC 噪底误触发——两头都错。
             try s.setCategory(.playAndRecord, mode: .default,
                               options: [.allowBluetoothHFP, .mixWithOthers])
+            // bufferSize=2048 + IOBufferDuration=0.1 = 10Hz 是经过验证的稳定值：
+            // 更快 → iOS 后台杀进程；更慢 → 电平环卡顿（见 CLAUDE.md §1 踩坑记录）
             try s.setPreferredSampleRate(16000)
             try s.setPreferredIOBufferDuration(0.1)
             try s.setActive(true)
         } catch {
-            onError?("音频会话失败: \(error.localizedDescription)"); return
+            onError?("音频会话失败: \(error.localizedDescription)")
+            return false
         }
 
-        audioEngine = AVAudioEngine()
-        let input   = audioEngine.inputNode
-        let format  = input.outputFormat(forBus: 0)
-        detector    = SnoringDetector(sampleRate: Float(format.sampleRate))
-        lastIsLoud  = false
-        smoothLevel = 0
+        audioEngine  = AVAudioEngine()
+        let input    = audioEngine.inputNode
+        let format   = input.outputFormat(forBus: 0)
+        detector     = SnoringDetector(sampleRate: Float(format.sampleRate))
+        lastIsLoud   = false
+        smoothLevel  = 0
+        bufferCount  = 0
 
-        // bufferSize 2048：~100ms/次（16kHz），与 preferredIOBufferDuration 匹配
-        // score() 内部用等间隔采样覆盖完整缓冲区，大小变化不影响检测精度
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buf, _ in
             self?.process(buffer: buf)
         }
 
         do {
             try audioEngine.start()
+            startDisplayTimer()
             DispatchQueue.main.async { self.isMonitoring = true }
+            return true
         } catch {
             onError?("引擎启动失败: \(error.localizedDescription)")
+            return false
         }
     }
 
-    func stopMonitoring() {
-        guard isMonitoring else { return }
+    private func teardown() {
         confirmTimer?.invalidate(); silenceTimer?.invalidate()
-        confirmTimer = nil; silenceTimer = nil
+        confirmTimer = nil;         silenceTimer = nil
+        displayTimer?.invalidate(); displayTimer = nil
         finishRecording()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.stop()
-        DispatchQueue.main.async {
-            self.isMonitoring = false; self.isSnoring = false; self.currentLevel = 0
+        if audioEngine.isRunning {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
         }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    // MARK: - Audio Processing（audio 线程）
+    // MARK: - Display Timer（6 Hz 批量写 UI）
+
+    private func startDisplayTimer() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let t = Timer(timeInterval: 1.0 / 6.0, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                let level   = self._pendingLevel
+                let isLoud  = self._pendingIsLoud
+                let changed = self._pendingChanged
+                self._pendingChanged = false
+
+                self.currentLevel = level
+                if changed { isLoud ? self.onLoud() : self.onSilent() }
+            }
+            // .common mode：锁屏/滑动时 timer 仍然触发
+            RunLoop.main.add(t, forMode: .common)
+            self.displayTimer = t
+        }
+    }
+
+    // MARK: - Audio Processing（audio 线程，禁止访问 UI）
 
     private func process(buffer: AVAudioPCMBuffer) {
         if isRecording, let file = recordingFile {
             try? file.write(from: buffer)
         }
 
-        // RMS 计算一次，同时用于 FFT 门控和 UI 平滑
         var rms: Float = 0
         if let data = buffer.floatChannelData?[0] {
             vDSP_rmsqv(data, 1, &rms, vDSP_Length(buffer.frameLength))
         }
 
-        let score   = detector?.score(buffer: buffer, rms: rms, minimumRMS: minimumRMS) ?? 0
-        let isLoud  = score >= snoreScoreThreshold
+        // 静音快速短路：RMS 低于阈值，直接标记非呼噜，跳过 FFT
+        var isLoud = lastIsLoud
+        if rms < minimumRMS {
+            isLoud = false
+        } else {
+            bufferCount += 1
+            if bufferCount % fftEvery == 0 {
+                let sc = detector?.score(buffer: buffer, rms: rms, minimumRMS: minimumRMS) ?? 0
+                isLoud = sc >= snoreScoreThreshold
+            }
+            // 非 FFT 帧：保持上次判断（等下一帧）
+        }
+
         let changed = isLoud != lastIsLoud
         lastIsLoud  = isLoud
 
-        // 上升：直接取 rms，环立即跟上声音
-        // 下降：α=0.2 缓慢衰减，视觉余韵自然
+        // 平滑：上升跟紧，下降缓衰
         smoothLevel = rms > smoothLevel ? rms : 0.2 * rms + 0.8 * smoothLevel
-        let level   = smoothLevel
 
-        DispatchQueue.main.async { [weak self, isLoud, changed, level] in
-            guard let self else { return }
-            self.currentLevel = level
-            if changed { isLoud ? self.onLoud() : self.onSilent() }
+        // 只写共享值，不 dispatch；由 displayTimer 读取更新 UI
+        _pendingLevel = smoothLevel
+        if changed {
+            _pendingIsLoud  = isLoud
+            _pendingChanged = true
         }
     }
 
-    // MARK: - State Machine（主线程）
+    // MARK: - State Machine（主线程，由 displayTimer 驱动）
 
     private func onLoud() {
         silenceTimer?.invalidate(); silenceTimer = nil
@@ -253,7 +311,6 @@ class AudioMonitorService: ObservableObject {
                 self?.confirmTimer = nil; self?.beginSnoring()
             }
         }
-        print("[SM] onLoud — isSnoring=\(isSnoring) confirmTimer=\(confirmTimer != nil)")
     }
 
     private func onSilent() {
@@ -263,18 +320,15 @@ class AudioMonitorService: ObservableObject {
                 self?.silenceTimer = nil; self?.endSnoring()
             }
         }
-        print("[SM] onSilent — isSnoring=\(isSnoring) silenceTimer=\(silenceTimer != nil)")
     }
 
     private func beginSnoring() {
-        print("[SM] beginSnoring — isSnoring=\(isSnoring)")
         guard !isSnoring else { return }
         isSnoring = true
         if let filename = startRecording() { onSnoringStarted?(filename) }
     }
 
     private func endSnoring() {
-        print("[SM] endSnoring — isSnoring=\(isSnoring)")
         guard isSnoring else { return }
         isSnoring = false
         finishRecording()
@@ -285,8 +339,6 @@ class AudioMonitorService: ObservableObject {
 
     @discardableResult
     private func startRecording() -> String? {
-        // 用引擎原始格式（Float32 PCM）直接写入 .caf，零格式转换，开头无咔哒声
-        // .caf 是 Apple 原生容器，完美支持任意 PCM 格式，iOS 播放无兼容问题
         let filename = "snore_\(Int(Date().timeIntervalSince1970)).caf"
         let url = docsURL.appendingPathComponent(filename)
         let fmt = audioEngine.inputNode.outputFormat(forBus: 0)
@@ -301,5 +353,126 @@ class AudioMonitorService: ObservableObject {
 
     private func finishRecording() {
         isRecording = false; recordingFile = nil
+    }
+
+    // MARK: - 后台任务（双重保险）
+
+    private func requestBackgroundTask() {
+        endBackgroundTask()
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "SnoreMonitor") { [weak self] in
+            self?.endBackgroundTask()
+        }
+    }
+
+    private func endBackgroundTask() {
+        guard bgTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(bgTask)
+        bgTask = .invalid
+    }
+
+    // MARK: - 系统通知（保活关键）
+
+    private func setupNotificationObservers() {
+        removeNotificationObservers()
+        let s = AVAudioSession.sharedInstance()
+        let nc = NotificationCenter.default
+
+        // ① 中断（来电、闹钟、Siri）——最常见的 4 小时被杀原因：
+        //    中断后 session 失活，audio 后台模式失效，数分钟后 iOS 杀进程
+        notificationObservers.append(
+            nc.addObserver(forName: AVAudioSession.interruptionNotification,
+                           object: s, queue: .main) { [weak self] n in
+                self?.handleInterruption(n)
+            }
+        )
+
+        // ② 媒体服务重置（系统崩溃或硬件异常导致 AVAudioSession 整体失效）
+        notificationObservers.append(
+            nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+                self?.handleMediaServicesReset()
+            }
+        )
+
+        // ③ 路由变更（蓝牙断开等）——只记日志，不重启 engine
+        //    原因：AVAudioEngineConfigurationChange 在正常运行时也可能触发，
+        //    重启会重置 lastIsLoud 但不重置 isSnoring，导致状态机死锁（见 CLAUDE.md §1）
+        notificationObservers.append(
+            nc.addObserver(forName: AVAudioSession.routeChangeNotification,
+                           object: s, queue: .main) { n in
+                if let r = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt {
+                    print("[Audio] 路由变更 reason=\(r)")
+                }
+            }
+        )
+    }
+
+    private func removeNotificationObservers() {
+        notificationObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        notificationObservers.removeAll()
+    }
+
+    // MARK: - 中断处理
+
+    private func handleInterruption(_ note: Notification) {
+        guard let info  = note.userInfo,
+              let typeV = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type  = AVAudioSession.InterruptionType(rawValue: typeV) else { return }
+
+        switch type {
+        case .began:
+            print("[Audio] 中断开始（来电/闹钟等）")
+            // engine 已被系统停止，displayTimer 还在跑但会读到 0 level，没有问题
+            displayTimer?.invalidate(); displayTimer = nil
+
+        case .ended:
+            print("[Audio] 中断结束，尝试恢复")
+            // 无论系统是否标记 shouldResume，都主动重激活：
+            // 不重启则 session 保持失活 → audio 后台模式失效 → 被杀进程
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self, self.isMonitoring else { return }
+                self.safeRestartEngine()
+            }
+
+        @unknown default:
+            break
+        }
+    }
+
+    // MARK: - 媒体服务重置
+
+    private func handleMediaServicesReset() {
+        guard isMonitoring else { return }
+        print("[Audio] 媒体服务重置，完全重建")
+        // 强制重置所有状态（session 已失效，不能复用）
+        teardown()
+        isSnoring = false   // 重置状态机，防止死锁
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, self.isMonitoring else { return }
+            self.activateAndStartEngine()
+        }
+    }
+
+    // MARK: - 安全重启（仅用于中断恢复，不用于路由变更）
+
+    /// 重新激活 session 并重启 engine，对用户透明（isMonitoring 保持 true）。
+    /// 若当前正在打呼噜，先结束录音事件，重启后重新检测，避免状态机死锁。
+    private func safeRestartEngine() {
+        // 若正在打呼噜则先正常结束，防止重置 lastIsLoud 后 isSnoring 卡死
+        if isSnoring { endSnoring() }
+
+        confirmTimer?.invalidate(); silenceTimer?.invalidate()
+        confirmTimer = nil;         silenceTimer = nil
+        displayTimer?.invalidate(); displayTimer = nil
+
+        if audioEngine.isRunning {
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self, self.isMonitoring else { return }
+            self.activateAndStartEngine()
+        }
     }
 }

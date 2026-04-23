@@ -80,11 +80,18 @@ SnoreTracker/
 - **Buffer size**: `bufferSize: 2048` + `preferredIOBufferDuration(0.1)` → ~10 callbacks/sec; UI 流畅且后台不被 iOS 杀进程
 - **FFT size**: 4096 — stride-based downsampling covers full buffer regardless of size (`stride = max(1, n / fftSize)`)
 - **RMS computed once** per frame, passed into `score()` — no duplicate `vDSP_rmsqv` call
-- **Session mode**: `.measurement` (optimized for capture apps vs `.default`)
+- **FFT 降频**: `fftEvery=2`，每隔一帧做 FFT (~5Hz)，检测延迟 <200ms，远小于 confirmDelay
+- **UI 批量更新**: displayTimer 6Hz 读取 `_pendingLevel/_pendingChanged`，替代每回调 `DispatchQueue.main.async`（从 10次/秒降到 6次/秒）
+- **静音短路**: `rms < minimumRMS` 时直接跳过 FFT，省去绝大多数安静夜晚的 CPU 计算
+- **Timer RunLoop mode**: heartbeat timer 和 liveTimer 都用 `.common` mode，锁屏/滑动时仍然触发
 
-### Background Audio
-- `AVAudioSession` category: `.playAndRecord`, mode: `.measurement`, options: `.mixWithOthers`
+### Background Audio & 保活机制
+- `AVAudioSession` category: `.playAndRecord`, mode: `.default`, options: `.mixWithOthers`
 - `UIBackgroundModes: audio` in Info.plist
+- **中断处理** (`AVAudioSession.interruptionNotification`): 中断结束后主动重激活 session + 重启 engine，这是 4 小时被杀进程的根本原因——来电/闹钟中断后 session 失活，audio 后台模式失效
+- **媒体服务重置** (`mediaServicesWereResetNotification`): 系统崩溃后完全重建
+- **Background Task** (`UIBackgroundTaskIdentifier`): 启动时申请，作为 audio 后台模式的双重保险
+- **⚠️ 禁止**在 `AVAudioEngineConfigurationChange` 回调中调用 `restartEngine()`——详见踩坑记录 §1
 
 ### Data Persistence
 - `SleepStore`: JSON-encoded `[SleepSession]` at `Documents/sleep_sessions.json` — survives recompiles
@@ -154,6 +161,15 @@ SnoreTracker/
 ---
 
 ### 2. FFT 评分公式 Bug（导致呼噜识别不精准）
+
+#### Bug D — 录音开头咔哒声（格式转换引入）
+**文件**: `AudioMonitorService.swift` `startRecording()`
+
+将录音格式从 `fmt.settings`（引擎原始 Float32 PCM）改为自定义 Int16 PCM 时，`AVAudioFile` 内部初始化格式转换器，转换器预热期间（约 3 帧）产生咔哒噪声。
+
+修复：**始终用 `fmt.settings` + `fmt.commonFormat` + `fmt.isInterleaved` 写文件**，零格式转换。容器用 `.caf`（Apple 原生，完美支持任意 PCM）。
+
+> **规则**：录音格式必须与 `inputNode.outputFormat` 完全一致，不得手动指定 bit depth 或 interleaved 等参数。如需更换容器格式，只改文件扩展名，不改 settings。
 
 #### Bug A — `totalE` 包含 0–80 Hz 次低频噪声（漏报）
 **文件**: `AudioMonitorService.swift` `score()` 函数
