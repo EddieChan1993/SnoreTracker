@@ -247,7 +247,10 @@ class AudioMonitorService: ObservableObject {
     private func startDisplayTimer() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let t = Timer(timeInterval: 1.0 / 6.0, repeats: true) { [weak self] _ in
+            // 15 Hz（67ms/帧）> spring response(120ms)，保证检测环丝滑无跳帧
+            // 相比原来每次音频回调 dispatch（10Hz），改为定时轮询：
+            // 音频线程不再直接唤醒主线程，依然减少跨线程 context switch 开销
+            let t = Timer(timeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 let level   = self._pendingLevel
                 let isLoud  = self._pendingIsLoud
