@@ -120,13 +120,6 @@ class AudioMonitorService: ObservableObject {
     private var confirmTimer: Timer?
     private var silenceTimer: Timer?
 
-    // ── UI 桥接：音频线程写 → displayTimer 读（6 Hz），大幅减少主线程唤醒 ────
-    // ARM64 上 Float/Bool 单次读写是原子操作，此处安全
-    private var _pendingLevel:   Float = 0
-    private var _pendingIsLoud:  Bool  = false
-    private var _pendingChanged: Bool  = false
-    private var displayTimer:    Timer?
-
     // FFT 每隔一帧做一次（~200ms/次），检测延迟远小于 confirmDelay（≥1s）
     // 注意：不用 stableFrames 类"按状态跳过"——会在呼噜刚开始时漏检（见 CLAUDE.md §1）
     private var bufferCount = 0
@@ -222,7 +215,6 @@ class AudioMonitorService: ObservableObject {
 
         do {
             try audioEngine.start()
-            startDisplayTimer()
             DispatchQueue.main.async { self.isMonitoring = true }
             return true
         } catch {
@@ -234,35 +226,10 @@ class AudioMonitorService: ObservableObject {
     private func teardown() {
         confirmTimer?.invalidate(); silenceTimer?.invalidate()
         confirmTimer = nil;         silenceTimer = nil
-        displayTimer?.invalidate(); displayTimer = nil
         finishRecording()
         if audioEngine.isRunning {
             audioEngine.inputNode.removeTap(onBus: 0)
             audioEngine.stop()
-        }
-    }
-
-    // MARK: - Display Timer（6 Hz 批量写 UI）
-
-    private func startDisplayTimer() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            // 15 Hz（67ms/帧）> spring response(120ms)，保证检测环丝滑无跳帧
-            // 相比原来每次音频回调 dispatch（10Hz），改为定时轮询：
-            // 音频线程不再直接唤醒主线程，依然减少跨线程 context switch 开销
-            let t = Timer(timeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                let level   = self._pendingLevel
-                let isLoud  = self._pendingIsLoud
-                let changed = self._pendingChanged
-                self._pendingChanged = false
-
-                self.currentLevel = level
-                if changed { isLoud ? self.onLoud() : self.onSilent() }
-            }
-            // .common mode：锁屏/滑动时 timer 仍然触发
-            RunLoop.main.add(t, forMode: .common)
-            self.displayTimer = t
         }
     }
 
@@ -296,12 +263,13 @@ class AudioMonitorService: ObservableObject {
 
         // 平滑：上升跟紧，下降缓衰
         smoothLevel = rms > smoothLevel ? rms : 0.2 * rms + 0.8 * smoothLevel
+        let level   = smoothLevel
 
-        // 只写共享值，不 dispatch；由 displayTimer 读取更新 UI
-        _pendingLevel = smoothLevel
-        if changed {
-            _pendingIsLoud  = isLoud
-            _pendingChanged = true
+        // 每次回调直接 dispatch，零轮询延迟，保证检测环即时响应
+        DispatchQueue.main.async { [weak self, level, isLoud, changed] in
+            guard let self else { return }
+            self.currentLevel = level
+            if changed { isLoud ? self.onLoud() : self.onSilent() }
         }
     }
 
@@ -425,8 +393,7 @@ class AudioMonitorService: ObservableObject {
         switch type {
         case .began:
             print("[Audio] 中断开始（来电/闹钟等）")
-            // engine 已被系统停止，displayTimer 还在跑但会读到 0 level，没有问题
-            displayTimer?.invalidate(); displayTimer = nil
+            // engine 已被系统停止，音频回调自然停止，无需额外处理
 
         case .ended:
             print("[Audio] 中断结束，尝试恢复")
@@ -466,7 +433,6 @@ class AudioMonitorService: ObservableObject {
 
         confirmTimer?.invalidate(); silenceTimer?.invalidate()
         confirmTimer = nil;         silenceTimer = nil
-        displayTimer?.invalidate(); displayTimer = nil
 
         if audioEngine.isRunning {
             audioEngine.inputNode.removeTap(onBus: 0)
