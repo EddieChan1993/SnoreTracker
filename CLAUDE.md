@@ -237,3 +237,9 @@ rm -rf SnoreTracker.xcodeproj/xcshareddata && xcodegen generate
 - `SleepStore` created once in `SnoreTrackerApp.init()`, passed to `SleepSessionManager`
 - `UITableView.appearance().backgroundColor = .clear` set in `ReportsView.onAppear` for iOS 15 compat
 - List swipe state resets on tab switch via `listID = UUID()` in `ReportsView.onAppear`
+
+## 变更记录
+
+### 2026-06-17
+- 🆕 新增：首页加入复习统计卡片（`ReviewStatsCard`）——「活动简介」/ 「综合实力」tab 切换，展示总监测次数、活跃天数、累计课时、当前/最长连续等指标
+- 🆕 新增：`build.sh` iOS 模拟器构建脚本（符合项目全局规范）

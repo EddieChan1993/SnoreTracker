@@ -5,6 +5,7 @@ struct HomeView: View {
     @EnvironmentObject var themeManager: ThemeManager
     @State private var showPermissionAlert = false
     @State private var pulse = false
+    @State private var statsTab = 0   // 0=简要 1=综合实力
     // 直接读 AppStorage，启动时即显示正确值，设置页修改后自动更新
     @AppStorage("silenceDelay") private var silenceDelay: Double = 5.0
 
@@ -16,6 +17,8 @@ struct HomeView: View {
 
             VStack(spacing: 0) {
                 topBar
+                reviewStatsCard
+                    .padding(.top, 14)
                 Spacer()
 
                 if !sessionManager.permissionGranted {
@@ -324,6 +327,134 @@ struct HomeView: View {
         let t = Int(s); let m = t / 60; let sec = t % 60
         if m > 0 { return "\(m)m\(sec)s" }
         return "\(sec)s"
+    }
+
+    // MARK: - 复习记录统计卡
+
+    private var reviewStatsCard: some View {
+        let sessions = sessionManager.store.sessions.filter { $0.endTime != nil }
+        return VStack(spacing: 12) {
+            // Tab 切换
+            HStack(spacing: 0) {
+                ForEach(["简要", "综合实力"], id: \.self) { tab in
+                    let idx = tab == "简要" ? 0 : 1
+                    Button {
+                        withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { statsTab = idx }
+                    } label: {
+                        Text(tab)
+                            .font(.system(size: 13, weight: statsTab == idx ? .semibold : .regular))
+                            .foregroundColor(statsTab == idx ? .white : .white.opacity(0.4))
+                            .padding(.vertical, 7)
+                            .padding(.horizontal, 20)
+                            .background(statsTab == idx ? Color.white.opacity(0.15) : Color.clear)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(Color.white.opacity(0.07))
+            .clipShape(Capsule())
+
+            // 指标网格
+            if statsTab == 0 {
+                briefGrid(sessions: sessions)
+            } else {
+                overallGrid(sessions: sessions)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(Color.white.opacity(theme.cardOpacity))
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.08), lineWidth: 1))
+        .padding(.horizontal, 20)
+    }
+
+    @ViewBuilder
+    private func briefGrid(sessions: [SleepSession]) -> some View {
+        let totalSessions   = sessions.count
+        let activeDays      = Set(sessions.map { Calendar.current.startOfDay(for: $0.startTime) }).count
+        let totalSnores     = sessions.reduce(0) { $0 + $1.snoringEvents.filter { $0.endTime != nil }.count }
+        let totalMins       = sessions.reduce(0.0) { $0 + $1.duration } / 60
+
+        let durationStr: String = {
+            let h = Int(totalMins) / 60; let m = Int(totalMins) % 60
+            return h > 0 ? "\(h)h\(m)m" : "\(m)m"
+        }()
+
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+            statCell(icon: "moon.fill",            value: "\(totalSessions)", label: "监测次数",  color: theme.accentLight)
+            statCell(icon: "waveform.badge.mic",   value: "\(activeDays)",   label: "活跃天数",  color: theme.accent)
+            statCell(icon: "clock.fill",           value: durationStr,        label: "累计时长",  color: theme.accent.opacity(0.8))
+            statCell(icon: "waveform",             value: "\(totalSnores)",  label: "累计呼噜",  color: theme.snoringAccent)
+        }
+    }
+
+    @ViewBuilder
+    private func overallGrid(sessions: [SleepSession]) -> some View {
+        let excellent  = sessions.filter { $0.snoringScore == "优秀" }.count
+        let good       = sessions.filter { $0.snoringScore == "良好" }.count
+        let avgPct     = sessions.isEmpty ? 0.0 : sessions.reduce(0.0) { $0 + $1.snoringPercentage } / Double(sessions.count)
+        let (cur, lng) = streaks(sessions: sessions)
+
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+            statCell(icon: "star.fill",        value: "\(excellent)",      label: "优秀次数",    color: Color.yellow)
+            statCell(icon: "hand.thumbsup.fill", value: "\(good)",         label: "良好次数",    color: Color.green.opacity(0.8))
+            statCell(icon: "percent",          value: String(format: "%.0f%%", avgPct), label: "平均占比", color: theme.snoringAccent)
+            statCell(icon: "flame.fill",       value: "\(cur)d / \(lng)d", label: "当前/最长连续", color: theme.accent)
+        }
+    }
+
+    private func statCell(icon: String, value: String, label: String, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundColor(color)
+                .frame(width: 28, height: 28)
+                .background(color.opacity(0.15))
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(value)
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text(label)
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // 当前连续天数 / 最长连续天数（按日历天计算）
+    private func streaks(sessions: [SleepSession]) -> (current: Int, longest: Int) {
+        guard !sessions.isEmpty else { return (0, 0) }
+        let cal = Calendar.current
+        let days = Set(sessions.map { cal.startOfDay(for: $0.startTime) }).sorted(by: >)
+
+        var current = 0
+        var prev = cal.startOfDay(for: Date())
+        for day in days {
+            if cal.dateComponents([.day], from: day, to: prev).day ?? 999 <= 1 {
+                current += 1
+                prev = day
+            } else { break }
+        }
+
+        var longest = 1, run = 1
+        let sorted = days.sorted()
+        for i in 1..<sorted.count {
+            if cal.dateComponents([.day], from: sorted[i-1], to: sorted[i]).day == 1 {
+                run += 1; longest = max(longest, run)
+            } else { run = 1 }
+        }
+        return (current, max(longest, current))
     }
 }
 
